@@ -45,7 +45,7 @@ def play(args):
     # override some parameters for testing
     env_cfg.env.episode_length_s = 20
     env_cfg.env.fail_to_terminal_time_s = 3
-    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 50)
+    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 4)  # reduced for inference to save GPU memory
     env_cfg.terrain.num_rows = 5
     env_cfg.terrain.num_cols = 10
     env_cfg.terrain.max_init_terrain_level = env_cfg.terrain.num_rows - 1
@@ -87,7 +87,7 @@ def play(args):
         print("Exported policy as jit script to: ", path)
 
     logger = Logger(env.dt)
-    robot_index = 21  # which robot is used for logging
+    robot_index = 0  # which robot is used for logging (reduced from 21 due to smaller num_envs for inference)
     joint_index = 1  # which joint is used for logging
     stop_state_log = 1000  # number of steps before plotting states
     stop_rew_log = (
