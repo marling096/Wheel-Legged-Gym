@@ -39,6 +39,9 @@ class WheelLeggedVMCFlatCfg(WheelLeggedVMCCfg):
     class terrain(WheelLeggedVMCCfg.terrain):
         mesh_type = "plane"
 
+    class control(WheelLeggedVMCCfg.control):
+        """可选覆盖 cfg；命令行 ``--control_path`` 默认 ``vmc_pd``，会覆盖此处。play 可用 ``--lqr_demo``（等价 ``vmc_lqr``）。"""
+
 
 class WheelLeggedVMCFlatCfgPPO(WheelLeggedVMCCfgPPO):
     class runner(WheelLeggedVMCCfgPPO.runner):

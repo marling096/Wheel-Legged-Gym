@@ -106,23 +106,83 @@ def parse_sim_params(args, cfg):
 
 
 def get_load_path(root, load_run=-1, checkpoint=-1):
+    def _model_files(run_dir):
+        files = [
+            f
+            for f in os.listdir(run_dir)
+            if "model" in f and f.endswith(".pt") and os.path.isfile(os.path.join(run_dir, f))
+        ]
+        files.sort(key=lambda m: "{0:0>15}".format(m))
+        return files
+
     try:
-        runs = os.listdir(root)
-        # TODO sort by date to handle change of month
+        runs = [
+            r
+            for r in os.listdir(root)
+            if os.path.isdir(os.path.join(root, r)) and r != "exported"
+        ]
         runs.sort()
-        if "exported" in runs:
-            runs.remove("exported")
-        last_run = os.path.join(root, runs[-1])
-    except:
-        raise ValueError("No runs in this directory: " + root)
+    except Exception as e:
+        raise ValueError("Cannot list experiment directory: " + root) from e
+
+    if not runs:
+        raise ValueError(
+            "No run folders under "
+            + root
+            + ". Train first or fix --experiment_name / logs path."
+        )
+
     if load_run == -1 or load_run == "-1":
-        load_run = last_run
+        load_run_dir = None
+        for r in reversed(runs):
+            cand = os.path.join(root, r)
+            if _model_files(cand):
+                load_run_dir = cand
+                break
+        if load_run_dir is None:
+            raise ValueError(
+                "No model_*.pt checkpoints found in any run under "
+                + root
+                + ". Either wait until training saves (see save_interval), "
+                "or use --load_run <subdir_name> pointing to a folder that contains checkpoints."
+            )
+        load_run = load_run_dir
     else:
-        load_run = os.path.join(root, load_run)
+        raw = str(load_run).strip()
+        expanded = os.path.expanduser(raw)
+        candidates = []
+        if os.path.isabs(expanded):
+            candidates.append(os.path.normpath(expanded))
+        candidates.append(os.path.normpath(os.path.join(root, expanded)))
+        if not os.path.isabs(expanded):
+            candidates.append(os.path.normpath(os.path.abspath(expanded)))
+        tail = os.path.basename(os.path.normpath(expanded))
+        if tail:
+            candidates.append(os.path.normpath(os.path.join(root, tail)))
+
+        load_run_resolved = None
+        for c in candidates:
+            if c and os.path.isdir(c):
+                load_run_resolved = c
+                break
+        if load_run_resolved is None:
+            raise ValueError(
+                "Could not resolve load_run={0!r} under experiment root={1!r}. "
+                "Use the run folder name only (e.g. May04_18-06-29_), "
+                "or a path relative to the current working directory "
+                "(e.g. logs/<experiment>/<run>), "
+                "or an absolute path.".format(raw, root)
+            )
+        load_run = load_run_resolved
 
     if checkpoint == -1:
-        models = [file for file in os.listdir(load_run) if "model" in file]
-        models.sort(key=lambda m: "{0:0>15}".format(m))
+        models = _model_files(load_run)
+        if not models:
+            raise ValueError(
+                "No model_*.pt in "
+                + load_run
+                + ". Specify --checkpoint N or choose another --load_run."
+            )
         model = models[-1]
     else:
         model = "model_{}.pt".format(checkpoint)
@@ -139,6 +199,8 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
         # num envs
         if args.num_envs is not None:
             env_cfg.env.num_envs = args.num_envs
+        if hasattr(env_cfg.control, "control_path"):
+            env_cfg.control.control_path = args.control_path
     if cfg_train is not None:
         if args.seed is not None:
             cfg_train.seed = args.seed
@@ -177,6 +239,18 @@ def get_args():
             "name": "--experiment_name",
             "type": str,
             "help": "Name of the experiment to run or load. Overrides config file if provided.",
+        },
+        {
+            "name": "--control_path",
+            "type": str,
+            "default": "vmc_pd",
+            "help": "wheel_legged_vmc*: virtual-leg loop — default vmc_pd (RL); use vmc_lqr for LQR. Overrides cfg.",
+        },
+        {
+            "name": "--lqr_demo",
+            "action": "store_true",
+            "default": False,
+            "help": "play.py only: single robot, no RL checkpoint; model LQR virtual-leg control (forces vmc_lqr).",
         },
         {
             "name": "--run_name",

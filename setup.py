@@ -12,6 +12,7 @@ setup(
     install_requires=[
         "isaacgym",
         "matplotlib",
+        "scipy>=1.5",
         "tensorboard",
         # TensorBoard 2.14 (last line for Python 3.8) requires protobuf 4.x API
         "protobuf>=4.21.6,<5",

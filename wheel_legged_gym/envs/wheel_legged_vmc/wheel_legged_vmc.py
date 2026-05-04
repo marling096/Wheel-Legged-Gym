@@ -50,6 +50,7 @@ from wheel_legged_gym.utils.math import (
     torch_rand_sqrt_float,
 )
 from wheel_legged_gym.utils.helpers import class_to_dict
+from wheel_legged_gym.utils.wl_virtual_lqr import build_virtual_leg_lqr_gain
 from .wheel_legged_vmc_config import WheelLeggedVMCCfg
 
 
@@ -71,6 +72,15 @@ class LeggedRobotVMC(LeggedRobot):
         """
         self.cfg = cfg
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
+
+        self._lqr_K = None
+        if getattr(self.cfg.control, "control_path", "vmc_pd") == "vmc_lqr":
+            K_np = build_virtual_leg_lqr_gain(self.cfg)
+            self._lqr_K = torch.tensor(K_np, dtype=torch.float, device=self.device)
+            print(
+                "[LeggedRobotVMC] control_path=vmc_lqr "
+                "(Q,R,K printed above; wheel torque loop unchanged)."
+            )
 
     def step(self, actions):
         """Apply actions, simulate, call self.post_physics_step()
@@ -389,10 +399,38 @@ class LeggedRobotVMC(LeggedRobot):
             * self.cfg.control.action_scale_vel
         )
 
-        self.torque_leg = (
-            self.theta_kp * (theta0_ref - self.theta0) - self.theta_kd * self.theta0_dot
-        )
-        self.force_leg = self.l0_kp * (l0_ref - self.L0) - self.l0_kd * self.L0_dot
+        if getattr(self.cfg.control, "control_path", "vmc_pd") == "vmc_lqr":
+            x_l = torch.stack(
+                (
+                    self.theta0[:, 0] - theta0_ref[:, 0],
+                    self.theta0_dot[:, 0],
+                    self.L0[:, 0] - l0_ref[:, 0],
+                    self.L0_dot[:, 0],
+                ),
+                dim=-1,
+            )
+            x_r = torch.stack(
+                (
+                    self.theta0[:, 1] - theta0_ref[:, 1],
+                    self.theta0_dot[:, 1],
+                    self.L0[:, 1] - l0_ref[:, 1],
+                    self.L0_dot[:, 1],
+                ),
+                dim=-1,
+            )
+            u_l = -torch.matmul(x_l, self._lqr_K.T)
+            u_r = -torch.matmul(x_r, self._lqr_K.T)
+            self.torque_leg = torch.stack((u_l[:, 0], u_r[:, 0]), dim=-1)
+            self.force_leg = (
+                torch.stack((u_l[:, 1], u_r[:, 1]), dim=-1)
+                + self.cfg.control.feedforward_force
+            )
+        else:
+            self.torque_leg = (
+                self.theta_kp * (theta0_ref - self.theta0)
+                - self.theta_kd * self.theta0_dot
+            )
+            self.force_leg = self.l0_kp * (l0_ref - self.L0) - self.l0_kd * self.L0_dot
         self.torque_wheel = self.d_gains[:, [2, 5]] * (
             wheel_vel_ref - self.dof_vel[:, [2, 5]]
         )

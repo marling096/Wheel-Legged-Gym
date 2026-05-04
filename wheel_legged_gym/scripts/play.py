@@ -57,8 +57,8 @@ def install_keyboard_teleop(env, env_cfg):
     vx_min, vx_max = env_cfg.commands.ranges.lin_vel_x
     h_min, h_max = env_cfg.commands.ranges.height
     # 单次按下直接给定指令幅值（不再逐级换挡）
-    vx_reverse = float(np.clip(vx_max, vx_min, vx_max))
-    vx_forward = float(np.clip(vx_min, vx_min, vx_max))
+    vx_forward = float(np.clip(vx_max, vx_min, vx_max))
+    vx_reverse = float(np.clip(vx_min, vx_min, vx_max))
     dheading = 0.5  # rad / 次，目标航向单次跳动（仍属姿态指令而非速度档位）
 
     forward = quat_apply(env.base_quat[0:1], env.forward_vec[0:1])
@@ -168,6 +168,10 @@ def apply_keyboard_commands(env):
 
 def play(args):
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
+    lqr_demo = getattr(args, "lqr_demo", False)
+    if lqr_demo and hasattr(env_cfg.control, "control_path"):
+        # make_env 内 update_cfg_from_args 会用 args.control_path 覆盖 cfg，此处同步 args
+        args.control_path = "vmc_lqr"
     if USE_KEYBOARD_TELEOP:
         # Avoid LeggedRobot._post_physics_step_callback periodically overwriting commands.
         env_cfg.commands.resampling_time = 1e9
@@ -175,6 +179,8 @@ def play(args):
     env_cfg.env.episode_length_s = 20
     env_cfg.env.fail_to_terminal_time_s = 3
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 4)  # reduced for inference to save GPU memory
+    if lqr_demo:
+        env_cfg.env.num_envs = 1
     env_cfg.terrain.num_rows = 5
     env_cfg.terrain.num_cols = 10
     env_cfg.terrain.max_init_terrain_level = env_cfg.terrain.num_rows - 1
@@ -192,6 +198,8 @@ def play(args):
     env_cfg.domain_rand.randomize_motor_torque = False
     env_cfg.domain_rand.randomize_default_dof_pos = False
     env_cfg.domain_rand.randomize_action_delay = False
+    if lqr_demo:
+        env_cfg.commands.resampling_time = 1e9
 
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
@@ -201,24 +209,43 @@ def play(args):
         else:
             install_keyboard_teleop(env, env_cfg)
     obs, obs_history = env.get_observations()
-    # load policy
-    train_cfg.runner.resume = True
-    ppo_runner, train_cfg = task_registry.make_alg_runner(
-        env=env, name=args.task, args=args, train_cfg=train_cfg
-    )
-    policy = ppo_runner.get_inference_policy(device=env.device)
 
-    # export policy as a jit module (used to run it from C++)
-    if EXPORT_POLICY:
-        path = os.path.join(
-            WHEEL_LEGGED_GYM_ROOT_DIR,
-            "logs",
-            train_cfg.runner.experiment_name,
-            "exported",
-            "policies",
+    policy = None
+    ppo_runner = None
+    latent = None
+    if lqr_demo:
+        if getattr(args, "headless", False):
+            print(
+                "[play] --lqr_demo 建议去掉 --headless，否则无法打开窗口观察单机器人。"
+            )
+        if not hasattr(env_cfg.control, "control_path"):
+            raise ValueError(
+                "--lqr_demo 仅适用于带 vmc_lqr 控制路径的任务（如 wheel_legged_vmc / wheel_legged_vmc_flat）。"
+            )
+        print(
+            "[play] LQR 演示：单环境、不加载 RL 策略；"
+            "虚拟腿由 LQR+K 矩阵控制，动作为零（仅站姿/指令 hold）。"
         )
-        export_policy_as_jit(ppo_runner.alg.actor_critic, path)
-        print("Exported policy as jit script to: ", path)
+        actions_zero = torch.zeros(
+            env.num_envs, env.num_actions, device=env.device, dtype=torch.float
+        )
+    else:
+        train_cfg.runner.resume = True
+        ppo_runner, train_cfg = task_registry.make_alg_runner(
+            env=env, name=args.task, args=args, train_cfg=train_cfg
+        )
+        policy = ppo_runner.get_inference_policy(device=env.device)
+
+        if EXPORT_POLICY:
+            path = os.path.join(
+                WHEEL_LEGGED_GYM_ROOT_DIR,
+                "logs",
+                train_cfg.runner.experiment_name,
+                "exported",
+                "policies",
+            )
+            export_policy_as_jit(ppo_runner.alg.actor_critic, path)
+            print("Exported policy as jit script to: ", path)
 
     logger = Logger(env.dt)
     robot_index = 0  # which robot is used for logging (reduced from 21 due to smaller num_envs for inference)
@@ -231,20 +258,25 @@ def play(args):
     camera_vel = np.array([1.0, 1.0, 0.0])
     camera_direction = np.array(env_cfg.viewer.lookat) - np.array(env_cfg.viewer.pos)
     img_idx = 0
-    latent = None
 
-    CoM_offset_compensate = True and not USE_KEYBOARD_TELEOP
+    CoM_offset_compensate = True and not USE_KEYBOARD_TELEOP and not lqr_demo
     vel_err_intergral = torch.zeros(env.num_envs, device=env.device)
     vel_cmd = torch.zeros(env.num_envs, device=env.device)
 
     for i in range(1000 * int(env.max_episode_length)):
-        if ppo_runner.alg.actor_critic.is_sequence:
+        if lqr_demo:
+            actions = actions_zero
+        elif ppo_runner.alg.actor_critic.is_sequence:
             actions, latent = policy(obs, obs_history)
         else:
             actions = policy(obs.detach())
 
         if USE_KEYBOARD_TELEOP and getattr(env, "_keyboard_teleop_state", None) is not None:
             apply_keyboard_commands(env)
+        elif lqr_demo:
+            env.commands[:, 0] = 0.0
+            env.commands[:, 2] = 0.18
+            env.commands[:, 3] = 0.0
         else:
             env.commands[:, 0] = 2.5
             env.commands[:, 2] = 0.18  # + 0.07 * np.sin(i * 0.01)
@@ -352,10 +384,11 @@ def play(args):
         elif i == stop_state_log:
             logger.plot_states()
         if 0 < i < stop_rew_log:
-            if infos["episode"]:
+            episode_info = infos.get("episode")
+            if episode_info:
                 num_episodes = torch.sum(env.reset_buf).item()
                 if num_episodes > 0:
-                    logger.log_rewards(infos["episode"], num_episodes)
+                    logger.log_rewards(episode_info, num_episodes)
         elif i == stop_rew_log:
             logger.print_rewards()
 

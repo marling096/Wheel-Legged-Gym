@@ -28,32 +28,89 @@ Related Links:
 4. Tasks must be registered using `task_registry.register(name, EnvClass, EnvConfig, TrainConfig)`. This is done in `envs/__init__.py`, but can also be done from outside of this repository.  
 
 ### Usage ###
-1. Train:  
-    ```python wheel_legged_gym/scripts/train.py --task=wheel_legged_vmc_flat```
-    -  To run on CPU add following arguments: `--sim_device=cpu`, `--rl_device=cpu` (sim on CPU and rl on GPU is possible).
-    -  To run headless (no rendering) add `--headless`.
-    - **Important**: To improve performance, once the training starts press `v` to stop the rendering. You can then enable it later to check the progress.
-    - The trained policy is saved in `logs/<experiment_name>/<date_time>_<run_name>/model_<iteration>.pt`. Where `<experiment_name>` and `<run_name>` are defined in the train config.
-    - Use TensorBoard to monitor training process `tensorboard --logdir=./ --port=8080` 
-    -  The following command line arguments override the values set in the config files:
-     - --task TASK: Task name.
-     - --resume:   Resume training from a checkpoint
-     - --experiment_name EXPERIMENT_NAME: Name of the experiment to run or load.
-     - --run_name RUN_NAME:  Name of the run.
-     - --load_run LOAD_RUN:   Name of the run to load when resume=True. If -1: will load the last run.
-     - --checkpoint CHECKPOINT:  Saved model checkpoint number. If -1: will load the last checkpoint.
-     - --num_envs NUM_ENVS:  Number of environments to create.
-     - --seed SEED:  Random seed.
-     - --max_iterations MAX_ITERATIONS:  Maximum number of training iterations.
-     - --exptid EXPTID:  Experiment ID.
-2. Play a trained policy:
-   ```python wheel_legged_gym/scripts/play.py --task=wheel_legged_vmc_flat```
-    - By default, the loaded policy is the last model of the last run of the experiment folder.
-    - Other runs/model iteration can be selected by setting `load_run` and `checkpoint` in the train config.
-3. Existing tasks:
-   - wheel_legged: End-to-End training for open-chain robot in various terrains.
-   - wheel_legged_vmc: Using VMC to unify motion control of open-chain and closed-chain mechanisms facilitates deploying policy onto closed-chain robots.
-   - wheel_legged_vmc_flat: Train robot in flat terrain (low VRAM requirements).
+
+#### 1. Train (RL, default control)
+
+Virtual-leg loop defaults to **`vmc_pd`** (PD + VMC, same as original RL pipeline). Override with **`--control_path`** only when needed.
+
+```bash
+# Flat terrain training (example task)
+python wheel_legged_gym/scripts/train.py --task=wheel_legged_vmc_flat
+
+# No viewer (common on servers)
+python wheel_legged_gym/scripts/train.py --task=wheel_legged_vmc_flat --headless
+
+# CPU sim / RL (optional)
+python wheel_legged_gym/scripts/train.py --task=wheel_legged_vmc_flat --sim_device=cpu --rl_device=cpu
+
+# Train with LQR replacing virtual-leg PD (requires scipy); wheel damping unchanged
+python wheel_legged_gym/scripts/train.py --task=wheel_legged_vmc_flat --control_path=vmc_lqr
+```
+
+- **Important**: With viewer enabled, press **`v`** to toggle viewer sync for speed; **`Esc`** exits.
+- Checkpoints: `logs/<experiment_name>/<date_time>_<run_name><exptid>/model_<iteration>.pt`.
+- **`--control_path`**: defaults to **`vmc_pd`**. Use **`vmc_lqr`** for the URDF-based LQR path (matrices **`Q`, `R`, `K`** are printed once at env init).
+
+#### 2. TensorBoard (training curves)
+
+After training starts, the console prints a suggested `--logdir`. Typical usage:
+
+```bash
+# Single run
+tensorboard --logdir logs/wheel_legged_vmc_flat/<run_folder>
+
+# Compare multiple runs under one experiment name
+tensorboard --logdir logs/wheel_legged_vmc_flat
+```
+
+If the web UI errors with protobuf / `MessageToJson`, pin **`protobuf<5`** (e.g. `pip install 'protobuf>=4.21.6,<5'`).
+
+#### 3. Offline training plots (PNG)
+
+```bash
+python wheel_legged_gym/scripts/plot_training_curves.py --log_dir logs/wheel_legged_vmc_flat/<run_folder>
+```
+
+Writes **`training_curves.png`** under that run folder (rewards / losses / control scalars when present).
+
+#### 4. Play (load trained policy)
+
+```bash
+python wheel_legged_gym/scripts/play.py --task=wheel_legged_vmc_flat
+```
+
+- By default loads the latest checkpoint of the latest run under the experiment folder; adjust **`load_run`** / **`checkpoint`** in the train config as needed.
+- **`--load_run`** accepts the **run folder name only** (e.g. `May04_18-06-29_`), a **path relative to your cwd** (e.g. `logs/wheel_legged_vmc_flat/May04_18-06-29_`), or an **absolute** path — do not duplicate `logs/<experiment>/` in front of a name that is already resolved against that experiment root.
+- Optional: **`--control_path=vmc_lqr`** or **`vmc_pd`** (default **`vmc_pd`**): must match how the policy was trained for best behaviour.
+
+#### 5. Play — LQR demo (no RL checkpoint, single robot)
+
+Model-based preview: **one env**, **zero** policy actions, virtual leg via **LQR + VMC** (no trained network).
+
+```bash
+python wheel_legged_gym/scripts/play.py --task=wheel_legged_vmc_flat --lqr_demo
+```
+
+Prefer **no `--headless`** so the viewer shows a single robot. This sets **`control_path`** to **`vmc_lqr`** internally.
+
+#### Common CLI overrides (also apply to train / play where relevant)
+
+| Argument | Description |
+|----------|-------------|
+| `--task` | Task name (e.g. `wheel_legged_vmc_flat`). |
+| `--control_path` | `vmc_pd` (default) or `vmc_lqr` for VMC wheel-leg tasks. |
+| `--lqr_demo` | Play only: LQR demo mode (see §5). |
+| `--resume` | Resume training from checkpoint. |
+| `--experiment_name`, `--run_name`, `--load_run`, `--checkpoint` | Logging / resume paths. |
+| `--num_envs`, `--seed`, `--max_iterations` | Env count, seed, PPO iterations. |
+| `--exptid` | Suffix appended to run log folder name. |
+| `--headless` | Disable viewer. |
+
+#### 6. Existing tasks
+
+- **wheel_legged**: End-to-end training for open-chain robot on varied terrain.
+- **wheel_legged_vmc**: VMC unifies open-chain / closed-chain-style deployment.
+- **wheel_legged_vmc_flat**: Flat terrain (lower VRAM).
 
 ### Adding a new environment ###
 The base environment `legged_robot` implements a rough terrain locomotion task. The corresponding cfg does not specify a robot asset (URDF/ MJCF) and has no reward scales. 
@@ -64,7 +121,7 @@ The base environment `legged_robot` implements a rough terrain locomotion task. 
     - In `cfg` set the asset path, define body names, default_joint_positions and PD gains. Specify the desired `train_cfg` and the name of the environment (python class).
     - In `train_cfg` set `experiment_name` and `run_name`
 3. (If needed) implement your environment in <your_env>.py, inherit from an existing environment, overwrite the desired functions and/or add your reward functions.
-4. Register your env in `isaacgym_anymal/envs/__init__.py`.
+4. Register your env in `wheel_legged_gym/envs/__init__.py`.
 5. Modify/Tune other parameters in your `cfg`, `cfg_train` as needed. To remove a reward set its scale to zero. Do not modify parameters of other envs!
 
 

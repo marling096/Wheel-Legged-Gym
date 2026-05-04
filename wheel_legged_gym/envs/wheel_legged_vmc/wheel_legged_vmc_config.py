@@ -57,6 +57,17 @@ class WheelLeggedVMCCfg(WheelLeggedCfg):
         stiffness = {"f0": 0.0, "f1": 0.0, "wheel": 0}  # [N*m/rad]
         damping = {"f0": 0.0, "f1": 0.0, "wheel": 0.5}  # [N*m*s/rad]
 
+        # 默认虚拟腿 PD + VMC（RL）。命令行 ``--control_path`` 默认为 vmc_pd，传入时会覆盖 cfg。
+        control_path = "vmc_pd"
+
+        class lqr:
+            q_theta = 120.0
+            q_theta_dot = 8.0
+            q_L = 800.0
+            q_L_dot = 15.0
+            r_torque = 2.0e-3
+            r_force = 5.0e-5
+
     class normalization(WheelLeggedCfg.normalization):
         class obs_scales(WheelLeggedCfg.normalization.obs_scales):
             l0 = 5.0
