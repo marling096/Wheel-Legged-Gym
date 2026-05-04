@@ -163,6 +163,12 @@ class BaseTask:
                     sys.exit()
                 elif evt.action == "toggle_viewer_sync" and evt.value > 0:
                     self.enable_viewer_sync = not self.enable_viewer_sync
+                else:
+                    cbs = getattr(self, "viewer_keyboard_callbacks", None)
+                    if cbs:
+                        cb = cbs.get(evt.action)
+                        if cb is not None:
+                            cb(evt)
 
             # fetch results
             if self.device != "cpu":

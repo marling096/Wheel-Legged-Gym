@@ -33,15 +33,144 @@ import os
 
 import isaacgym
 from isaacgym.torch_utils import *
+from isaacgym import gymapi
 from wheel_legged_gym.envs import *
 from wheel_legged_gym.utils import get_args, export_policy_as_jit, task_registry, Logger
 
 import numpy as np
 import torch
 
+# 脚本直接运行时可在 __main__ 中改为 True；若从其它模块 import play()，请先设置该变量
+USE_KEYBOARD_TELEOP = False
+
+
+def install_keyboard_teleop(env, env_cfg):
+    """Subscribe viewer keys and drive env.commands (vx, heading target, height).
+
+    Commands layout matches LeggedRobot._resample_commands:
+      [:, 0] lin_vel_x, [:, 1] ang_vel_yaw (overwritten from heading when heading_command),
+      [:, 2] height, [:, 3] heading target [rad].
+
+    Requires viewer (non-headless). Callbacks run inside BaseTask.render during env.step().
+    """
+
+    vx_min, vx_max = env_cfg.commands.ranges.lin_vel_x
+    h_min, h_max = env_cfg.commands.ranges.height
+    # 单次按下直接给定指令幅值（不再逐级换挡）
+    vx_reverse = float(np.clip(vx_max, vx_min, vx_max))
+    vx_forward = float(np.clip(vx_min, vx_min, vx_max))
+    dheading = 0.5  # rad / 次，目标航向单次跳动（仍属姿态指令而非速度档位）
+
+    forward = quat_apply(env.base_quat[0:1], env.forward_vec[0:1])
+    state = {
+        "vx": float(torch.clip(env.commands[0, 0], vx_min, vx_max).cpu()),
+        "height": float(torch.clip(env.commands[0, 2], h_min, h_max).cpu()),
+        "heading": float(torch.atan2(forward[:, 1], forward[:, 0]).squeeze().cpu()),
+    }
+
+    def wrap_pi(a):
+        return float(np.arctan2(np.sin(a), np.cos(a)))
+
+    def bump_heading(delta):
+        state["heading"] = wrap_pi(state["heading"] + delta)
+
+    callbacks = {}
+
+    def bind(key_code, action_name, fn):
+        env.gym.subscribe_viewer_keyboard_event(env.viewer, key_code, action_name)
+        callbacks[action_name] = fn
+
+    def on_press(evt, fn):
+        if evt.value > 0:
+            fn()
+
+    bind(
+        gymapi.KEY_W,
+        "teleop_vx_fwd",
+        lambda e: on_press(e, lambda: state.update({"vx": vx_forward})),
+    )
+    bind(
+        gymapi.KEY_S,
+        "teleop_vx_rev",
+        lambda e: on_press(e, lambda: state.update({"vx": vx_reverse})),
+    )
+    bind(
+        gymapi.KEY_UP,
+        "teleop_vx_fwd_arw",
+        lambda e: on_press(e, lambda: state.update({"vx": vx_forward})),
+    )
+    bind(
+        gymapi.KEY_DOWN,
+        "teleop_vx_rev_arw",
+        lambda e: on_press(e, lambda: state.update({"vx": vx_reverse})),
+    )
+    bind(
+        gymapi.KEY_A,
+        "teleop_heading_left",
+        lambda e: on_press(e, lambda: bump_heading(dheading)),
+    )
+    bind(
+        gymapi.KEY_D,
+        "teleop_heading_right",
+        lambda e: on_press(e, lambda: bump_heading(-dheading)),
+    )
+    bind(
+        gymapi.KEY_LEFT,
+        "teleop_heading_left_arw",
+        lambda e: on_press(e, lambda: bump_heading(dheading)),
+    )
+    bind(
+        gymapi.KEY_RIGHT,
+        "teleop_heading_right_arw",
+        lambda e: on_press(e, lambda: bump_heading(-dheading)),
+    )
+    bind(
+        gymapi.KEY_Q,
+        "teleop_height_high",
+        lambda e: on_press(e, lambda: state.update({"height": h_max})),
+    )
+    bind(
+        gymapi.KEY_E,
+        "teleop_height_low",
+        lambda e: on_press(e, lambda: state.update({"height": h_min})),
+    )
+    bind(
+        gymapi.KEY_SPACE,
+        "teleop_stop_vx",
+        lambda e: on_press(e, lambda: state.update({"vx": 0.0})),
+    )
+
+    env.viewer_keyboard_callbacks = callbacks
+    env._keyboard_teleop_state = state
+
+    print(
+        "键盘遥操作 (需聚焦仿真窗口):\n"
+        f"  W/S 或 ↑/↓ : 线速度指令一次到位 "
+        f"(前进={vx_forward:.2f} m/s, 后退={vx_reverse:.2f} m/s，取自 cfg.commands.ranges.lin_vel_x)\n"
+        "  A/D 或 ←/→ : 目标航向单次转动一步（heading_command=True 时生效）\n"
+        "  Q/E        : 高度指令为高限 / 低限（cfg.commands.ranges.height）\n"
+        "  Space      : 线速度归零\n"
+        "  V          : 切换 viewer 同步（原有） Esc : 退出\n"
+    )
+
+
+def apply_keyboard_commands(env):
+    st = getattr(env, "_keyboard_teleop_state", None)
+    if st is None:
+        return
+    vx = st["vx"]
+    h = st["heading"]
+    ht = st["height"]
+    env.commands[:, 0] = vx
+    env.commands[:, 2] = ht
+    env.commands[:, 3] = h
+
 
 def play(args):
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
+    if USE_KEYBOARD_TELEOP:
+        # Avoid LeggedRobot._post_physics_step_callback periodically overwriting commands.
+        env_cfg.commands.resampling_time = 1e9
     # override some parameters for testing
     env_cfg.env.episode_length_s = 20
     env_cfg.env.fail_to_terminal_time_s = 3
@@ -66,6 +195,11 @@ def play(args):
 
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
+    if USE_KEYBOARD_TELEOP:
+        if getattr(args, "headless", False) or env.viewer is None:
+            print("USE_KEYBOARD_TELEOP 需要可视化窗口（不要使用 --headless）。")
+        else:
+            install_keyboard_teleop(env, env_cfg)
     obs, obs_history = env.get_observations()
     # load policy
     train_cfg.runner.resume = True
@@ -99,7 +233,7 @@ def play(args):
     img_idx = 0
     latent = None
 
-    CoM_offset_compensate = True
+    CoM_offset_compensate = True and not USE_KEYBOARD_TELEOP
     vel_err_intergral = torch.zeros(env.num_envs, device=env.device)
     vel_cmd = torch.zeros(env.num_envs, device=env.device)
 
@@ -109,9 +243,12 @@ def play(args):
         else:
             actions = policy(obs.detach())
 
-        env.commands[:, 0] = 2.5
-        env.commands[:, 2] = 0.18  # + 0.07 * np.sin(i * 0.01)
-        env.commands[:, 3] = 0
+        if USE_KEYBOARD_TELEOP and getattr(env, "_keyboard_teleop_state", None) is not None:
+            apply_keyboard_commands(env)
+        else:
+            env.commands[:, 0] = 2.5
+            env.commands[:, 2] = 0.18  # + 0.07 * np.sin(i * 0.01)
+            env.commands[:, 3] = 0
 
         if CoM_offset_compensate:
             if i > 200 and i < 600:
@@ -227,5 +364,7 @@ if __name__ == "__main__":
     EXPORT_POLICY = True
     RECORD_FRAMES = False
     MOVE_CAMERA = False
+    # True：用键盘改 env.commands（需在仿真窗口聚焦）；转向需 cfg.commands.heading_command=True
+    USE_KEYBOARD_TELEOP = True
     args = get_args()
     play(args)
