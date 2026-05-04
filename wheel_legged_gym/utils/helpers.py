@@ -181,7 +181,7 @@ def get_args():
         {
             "name": "--run_name",
             "type": str,
-            "help": "Name of the run. Overrides config file if provided.",
+            "help": "Run name suffix in log folder; omit or empty uses timestamp %Y%m%d_%H%M%S_mmm.",
         },
         {
             "name": "--load_run",
@@ -226,7 +226,12 @@ def get_args():
             "type": int,
             "help": "Maximum number of training iterations. Overrides config file if provided.",
         },
-        {"name": "--exptid", "type": str, "default": "", "help": "exptid"},
+        {
+            "name": "--exptid",
+            "type": str,
+            "default": "",
+            "help": "Appended to log folder after run_name; empty adds random _XXXX.",
+        },
     ]
     # parse arguments
     args = gymutil.parse_arguments(

@@ -29,6 +29,7 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
 import os
+import secrets
 from datetime import datetime
 from typing import Tuple
 import torch
@@ -52,6 +53,25 @@ from wheel_legged_gym.envs.base.legged_robot_config import (
     LeggedRobotCfg,
     LeggedRobotCfgPPO,
 )
+
+
+def _run_log_directory_name(train_cfg, args, now: datetime) -> str:
+    """Build log subdir: <MonDD_HH-MM-SS>_<run_name><exptid>.
+
+    If run_name is empty, set it to timestamp %Y%m%d_%H%M%S_mmm (same wall time as ``now``).
+    If exptid is empty, append random ``_<4 hex>`` to avoid same-second collisions.
+    """
+    rn = (train_cfg.runner.run_name or "").strip()
+    if not rn:
+        train_cfg.runner.run_name = now.strftime("%Y%m%d_%H%M%S_%f")[:-3]
+    else:
+        train_cfg.runner.run_name = rn
+
+    ex = (getattr(args, "exptid", None) or "").strip()
+    if not ex:
+        ex = "_" + secrets.token_hex(2)
+
+    return now.strftime("%b%d_%H-%M-%S") + "_" + train_cfg.runner.run_name + ex
 
 
 class TaskRegistry:
@@ -162,7 +182,7 @@ class TaskRegistry:
             args (Args, optional): Isaac Gym comand line arguments. If None get_args() will be called. Defaults to None.
             train_cfg (Dict, optional): Training config file. If None 'name' will be used to get the config file. Defaults to None.
             log_root (str, optional): Logging directory for Tensorboard. Set to 'None' to avoid logging (at test time for example).
-                                      Logs will be saved in <log_root>/<date_time>_<run_name>. Defaults to "default"=<path_to_LEGGED_GYM>/logs/<experiment_name>.
+                                      Logs use subdir from ``_run_log_directory_name`` under log_root. Defaults to "default"=<path_to_LEGGED_GYM>/logs/<experiment_name>.
 
         Raises:
             ValueError: Error if neither 'name' or 'train_cfg' are provided
@@ -194,23 +214,15 @@ class TaskRegistry:
                 train_cfg.runner.experiment_name,
             )
             os.makedirs(log_root, exist_ok=True)
-            self.log_dir = os.path.join(
-                log_root,
-                datetime.now().strftime("%b%d_%H-%M-%S")
-                + "_"
-                + train_cfg.runner.run_name
-                + args.exptid,
-            )
+            now = datetime.now()
+            log_subdir = _run_log_directory_name(train_cfg, args, now)
+            self.log_dir = os.path.join(log_root, log_subdir)
         elif log_root is None:
             self.log_dir = None
         else:
-            self.log_dir = os.path.join(
-                log_root,
-                datetime.now().strftime("%b%d_%H-%M-%S")
-                + "_"
-                + train_cfg.runner.run_name
-                + args.exptid,
-            )
+            now = datetime.now()
+            log_subdir = _run_log_directory_name(train_cfg, args, now)
+            self.log_dir = os.path.join(log_root, log_subdir)
 
         train_cfg_dict = class_to_dict(train_cfg)
         runner = OnPolicyRunner(

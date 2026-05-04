@@ -13,6 +13,8 @@ setup(
         "isaacgym",
         "matplotlib",
         "tensorboard",
+        # TensorBoard 2.14 (last line for Python 3.8) requires protobuf 4.x API
+        "protobuf>=4.21.6,<5",
         "setuptools==59.5.0",
         "numpy>=1.16.4",
         "numpy<1.20.0",

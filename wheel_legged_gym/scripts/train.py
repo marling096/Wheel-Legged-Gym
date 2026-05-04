@@ -28,14 +28,12 @@
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
-import numpy as np
 import os
-from datetime import datetime
 
 import isaacgym
+from wheel_legged_gym import WHEEL_LEGGED_GYM_ROOT_DIR
 from wheel_legged_gym.envs import *
 from wheel_legged_gym.utils import get_args, task_registry
-import torch
 
 
 def train(args):
@@ -43,6 +41,22 @@ def train(args):
     ppo_runner, train_cfg = task_registry.make_alg_runner(
         env=env, name=args.task, args=args
     )
+    if getattr(ppo_runner, "log_dir", None):
+        exp_root = os.path.join(
+            WHEEL_LEGGED_GYM_ROOT_DIR,
+            "logs",
+            train_cfg.runner.experiment_name,
+        )
+        print(
+            "\n=== 训练过程可视化 ===\n"
+            f"TensorBoard（本次运行）:\n"
+            f"  tensorboard --logdir {ppo_runner.log_dir}\n"
+            f"TensorBoard（同实验名下多次对比）:\n"
+            f"  tensorboard --logdir {exp_root}\n"
+            "离线导出 PNG（奖励 / 损失 / 控制误差）:\n"
+            f"  python {os.path.join(os.path.dirname(__file__), 'plot_training_curves.py')} "
+            f"--log_dir {ppo_runner.log_dir}\n"
+        )
     task_registry.save_cfgs(name=args.task)
     ppo_runner.learn(
         num_learning_iterations=train_cfg.runner.max_iterations,

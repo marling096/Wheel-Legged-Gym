@@ -119,6 +119,10 @@ class OnPolicyRunner:
         tot_iter = self.current_learning_iteration + num_learning_iterations
         for it in range(self.current_learning_iteration, tot_iter):
             start = time.time()
+            ctrl_lin_err_sum = 0.0
+            ctrl_yaw_err_sum = 0.0
+            ctrl_height_err_sum = 0.0
+            ctrl_n = 0
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
@@ -126,6 +130,20 @@ class OnPolicyRunner:
                     obs, privileged_obs, rewards, dones, infos, obs_history = (
                         self.env.step(actions)
                     )
+                    if self.log_dir is not None and hasattr(self.env, "commands"):
+                        ctrl_n += 1
+                        cmd = self.env.commands
+                        bv = self.env.base_lin_vel
+                        ctrl_lin_err_sum += torch.mean(
+                            torch.abs(cmd[:, 0] - bv[:, 0])
+                        ).item()
+                        ctrl_yaw_err_sum += torch.mean(
+                            torch.abs(cmd[:, 1] - self.env.base_ang_vel[:, 2])
+                        ).item()
+                        if hasattr(self.env, "base_height"):
+                            ctrl_height_err_sum += torch.mean(
+                                torch.abs(cmd[:, 2] - self.env.base_height)
+                            ).item()
                     critic_obs = privileged_obs if privileged_obs is not None else obs
                     obs, obs_history, critic_obs, rewards, dones = (
                         obs.to(self.device),
@@ -230,6 +248,26 @@ class OnPolicyRunner:
                 statistics.mean(locs["lenbuffer"]),
                 locs["it"],
             )
+
+        ctrl_n = locs.get("ctrl_n", 0)
+        if ctrl_n > 0:
+            inv = 1.0 / ctrl_n
+            self.writer.add_scalar(
+                "Control/mean_abs_lin_vel_x_error",
+                locs["ctrl_lin_err_sum"] * inv,
+                locs["it"],
+            )
+            self.writer.add_scalar(
+                "Control/mean_abs_yaw_vel_error",
+                locs["ctrl_yaw_err_sum"] * inv,
+                locs["it"],
+            )
+            if hasattr(self.env, "base_height"):
+                self.writer.add_scalar(
+                    "Control/mean_abs_height_error",
+                    locs["ctrl_height_err_sum"] * inv,
+                    locs["it"],
+                )
 
         str = f" \033[1m Learning iteration {locs['it']}/{locs['num_learning_iterations']} \033[0m "
 

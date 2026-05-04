@@ -303,7 +303,7 @@ class LeggedRobotCfgPPO(BaseConfig):
         # logging
         save_interval = 100  # check for potential saves every this many iterations
         experiment_name = "test"
-        run_name = ""
+        run_name = ""  # empty -> runtime default timestamp in task_registry._run_log_directory_name
         # load and resume
         resume = False
         load_run = -1  # -1 = last run
