@@ -15,6 +15,7 @@ def parse_wheellegged_urdf_inertial(urdf_path: str) -> dict:
 
     total_mass = 0.0
     base_mass = None
+    base_com_xyz = None
     base_inertia = {}
     wheel_mass_sum = 0.0
     wheel_radius = None
@@ -40,6 +41,12 @@ def parse_wheellegged_urdf_inertial(urdf_path: str) -> dict:
         if name == "base_link":
             base_mass = m
             base_inertia = inertia
+            origin_el = inertial.find("origin")
+            xyz_attr = origin_el.attrib.get("xyz") if origin_el is not None else None
+            if xyz_attr:
+                parts = xyz_attr.replace(",", " ").split()
+                if len(parts) >= 3:
+                    base_com_xyz = tuple(float(parts[i]) for i in range(3))
         if "wheel" in name.lower():
             wheel_mass_sum += m
 
@@ -50,6 +57,7 @@ def parse_wheellegged_urdf_inertial(urdf_path: str) -> dict:
     return {
         "total_mass": total_mass,
         "base_mass": base_mass or 0.0,
+        "base_com_xyz": base_com_xyz,
         "base_inertia_ixx": base_inertia.get("ixx"),
         "base_inertia_iyy": base_inertia.get("iyy"),
         "base_inertia_izz": base_inertia.get("izz"),

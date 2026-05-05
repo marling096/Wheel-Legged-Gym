@@ -73,6 +73,9 @@ class LeggedRobotVMC(LeggedRobot):
         self.cfg = cfg
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
 
+        self._lqr_x_err_integral = torch.zeros(
+            self.num_envs, dtype=torch.float, device=self.device
+        )
         self._lqr_K = None
         if getattr(self.cfg.control, "control_path", "vmc_pd") == "vmc_lqr":
             K_np = build_virtual_leg_lqr_gain(self.cfg)
@@ -154,6 +157,12 @@ class LeggedRobotVMC(LeggedRobot):
         self.projected_gravity[:] = quat_rotate_inverse(
             self.base_quat, self.gravity_vec
         )
+
+        if getattr(self.cfg.control, "control_path", "vmc_pd") == "vmc_lqr":
+            if getattr(self.cfg.control.lqr, "state_model", "paper6") != "legacy4":
+                vx = self.base_lin_vel[:, 0]
+                vx_cmd = self.commands[:, 0]
+                self._lqr_x_err_integral += (vx - vx_cmd) * self.dt
 
         self._post_physics_step_callback()
 
@@ -253,6 +262,7 @@ class LeggedRobotVMC(LeggedRobot):
         self.envs_steps_buf[env_ids] = 0
         self.last_dof_pos[env_ids] = self.dof_pos[env_ids]
         self.last_base_position[env_ids] = self.base_position[env_ids]
+        self._lqr_x_err_integral[env_ids] = 0.0
         self.obs_history[env_ids] = 0
         obs_buf = self.compute_proprioception_observations()
         self.obs_history[env_ids] = obs_buf[env_ids].repeat(1, self.obs_history_length)
@@ -400,31 +410,61 @@ class LeggedRobotVMC(LeggedRobot):
         )
 
         if getattr(self.cfg.control, "control_path", "vmc_pd") == "vmc_lqr":
-            x_l = torch.stack(
-                (
-                    self.theta0[:, 0] - theta0_ref[:, 0],
-                    self.theta0_dot[:, 0],
-                    self.L0[:, 0] - l0_ref[:, 0],
-                    self.L0_dot[:, 0],
-                ),
-                dim=-1,
-            )
-            x_r = torch.stack(
-                (
-                    self.theta0[:, 1] - theta0_ref[:, 1],
-                    self.theta0_dot[:, 1],
-                    self.L0[:, 1] - l0_ref[:, 1],
-                    self.L0_dot[:, 1],
-                ),
-                dim=-1,
-            )
+            if getattr(self.cfg.control.lqr, "state_model", "paper6") == "legacy4":
+                x_l = torch.stack(
+                    (
+                        self.theta0[:, 0] - theta0_ref[:, 0],
+                        self.theta0_dot[:, 0],
+                        self.L0[:, 0] - l0_ref[:, 0],
+                        self.L0_dot[:, 0],
+                    ),
+                    dim=-1,
+                )
+                x_r = torch.stack(
+                    (
+                        self.theta0[:, 1] - theta0_ref[:, 1],
+                        self.theta0_dot[:, 1],
+                        self.L0[:, 1] - l0_ref[:, 1],
+                        self.L0_dot[:, 1],
+                    ),
+                    dim=-1,
+                )
+            else:
+                # X = [ x , ẋ , θ , θ̇ , l , ẋ_l ]ᵀ（与 wl_virtual_lqr.STATE_SPACE_DESCRIPTION_PAPER6 一致）
+                vx_err = self.base_lin_vel[:, 0] - self.commands[:, 0]
+                x_err = self._lqr_x_err_integral
+                x_l = torch.stack(
+                    (
+                        x_err,
+                        vx_err,
+                        self.theta0[:, 0] - theta0_ref[:, 0],
+                        self.theta0_dot[:, 0],
+                        self.L0[:, 0] - l0_ref[:, 0],
+                        self.L0_dot[:, 0],
+                    ),
+                    dim=-1,
+                )
+                x_r = torch.stack(
+                    (
+                        x_err,
+                        vx_err,
+                        self.theta0[:, 1] - theta0_ref[:, 1],
+                        self.theta0_dot[:, 1],
+                        self.L0[:, 1] - l0_ref[:, 1],
+                        self.L0_dot[:, 1],
+                    ),
+                    dim=-1,
+                )
             u_l = -torch.matmul(x_l, self._lqr_K.T)
             u_r = -torch.matmul(x_r, self._lqr_K.T)
             self.torque_leg = torch.stack((u_l[:, 0], u_r[:, 0]), dim=-1)
-            self.force_leg = (
-                torch.stack((u_l[:, 1], u_r[:, 1]), dim=-1)
-                + self.cfg.control.feedforward_force
-            )
+            # Same as PD path: feedforward is applied once inside VMC(..., +feedforward_force).
+            self.force_leg = torch.stack((u_l[:, 1], u_r[:, 1]), dim=-1)
+            if getattr(self, "_lqr_height_force_enabled", False):
+                # Height-priority additive force loop (demo only), shared on both virtual legs.
+                h_force_add = getattr(self, "_lqr_height_force_add", None)
+                if h_force_add is not None:
+                    self.force_leg = self.force_leg + h_force_add.unsqueeze(1)
         else:
             self.torque_leg = (
                 self.theta_kp * (theta0_ref - self.theta0)

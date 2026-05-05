@@ -61,12 +61,34 @@ class WheelLeggedVMCCfg(WheelLeggedCfg):
         control_path = "vmc_pd"
 
         class lqr:
-            q_theta = 120.0
-            q_theta_dot = 8.0
-            q_L = 800.0
-            q_L_dot = 15.0
-            r_torque = 2.0e-3
-            r_force = 5.0e-5
+            # paper6: X = [x, ẋ, θ, θ̇, l, ẋ_l]ᵀ；legacy4: X = [Δθ, θ̇, ΔL, Ḻ]ᵀ
+            state_model = "legacy4"
+            # upright-first tuning for paper6:
+            # 1) weaken x/xdot coupling to avoid longitudinal error injecting large Fr
+            # 2) emphasize theta/theta_dot stabilization
+            # 3) increase force penalty to prevent aggressive radial-force oscillation
+            q_x = 0.0
+            q_x_dot = 0.0
+            q_theta = 180.0
+            q_theta_dot = 14.0
+            q_L = 1000.0
+            q_L_dot = 28.0
+            r_torque = 1.2e-3
+            r_force = 2.0e-4
+
+            # LQR plant linearization (see wl_virtual_lqr.py; Chen et al. 2023 IP + decoupled length).
+            balance_linearization = "paper"  # "paper" | "legacy"
+            com_height_offset_m = 0.0  # [m] added to |base_com_z| + r_wheel for h_lever
+            h_lever_min_m = 0.07
+            h_lever_max_m = 0.55
+            alpha_theta_cap = 120.0  # [1/s^2] numerical cap on A[1,0]
+            inertia_drive_margin = 0.02  # I_drive += margin * M_tot (paper mode B torque gain)
+            radial_mass_fraction = 0.45  # m_eff = max(M_tot * frac, radial_mass_min_kg)
+            radial_mass_min_kg = 0.5
+            # paper6 车体–摆质量拆分（URDF wheel 总质量为 M_cart 下界）
+            M_cart_floor_kg = 1.2
+            m_body_floor_kg = 0.8
+            I_theta_floor_kg_m2 = 0.08
 
     class normalization(WheelLeggedCfg.normalization):
         class obs_scales(WheelLeggedCfg.normalization.obs_scales):
