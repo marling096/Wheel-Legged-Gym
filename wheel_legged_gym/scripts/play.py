@@ -68,8 +68,38 @@ def env_bool(name, default):
     return value.lower() in ("1", "true", "yes", "on")
 
 
+def build_tracking_curve(kind, base, amp, freq):
+    """Return f(t)->target for tracking demos."""
+    curve = str(kind).lower()
+    if curve in ("const", "constant"):
+        return lambda t: float(base)
+    if curve in ("sine", "sin"):
+        return lambda t: float(base + amp * np.sin(2.0 * np.pi * freq * t))
+    if curve in ("square", "sq"):
+        return lambda t: float(base + amp * np.sign(np.sin(2.0 * np.pi * freq * t)))
+    # fallback
+    return lambda t: float(base)
+
+
 # RL play 模式（非 --lqr_demo）每步写入的默认高度指令
 PLAY_DEFAULT_HEIGHT_CMD = 0.18
+PLAY_TRACKING_ENABLED = env_bool("PLAY_TRACKING_ENABLED", True)
+PLAY_TRACK_VX_BASE = env_float("PLAY_TRACK_VX_BASE", 0.0)
+PLAY_TRACK_VX_AMP = env_float("PLAY_TRACK_VX_AMP", 2.0)
+PLAY_TRACK_VX_FREQ = env_float("PLAY_TRACK_VX_FREQ", 0.06)
+PLAY_TRACK_VX_CURVE = env_str("PLAY_TRACK_VX_CURVE", "sine")
+PLAY_TRACK_H_BASE = env_float("PLAY_TRACK_H_BASE", PLAY_DEFAULT_HEIGHT_CMD)
+PLAY_TRACK_H_AMP = env_float("PLAY_TRACK_H_AMP", 0.02)
+PLAY_TRACK_H_FREQ = env_float("PLAY_TRACK_H_FREQ", 0.06)
+PLAY_TRACK_H_CURVE = env_str("PLAY_TRACK_H_CURVE", "sine")
+PLAY_REALTIME_PLOT = env_bool("PLAY_REALTIME_PLOT", True)
+PLAY_REALTIME_PLOT_INTERVAL = env_int("PLAY_REALTIME_PLOT_INTERVAL", 10)
+PLAY_REALTIME_PLOT_WINDOW_S = env_float("PLAY_REALTIME_PLOT_WINDOW_S", 10.0)
+PLAY_VIEWER_OVERLAY = env_bool("PLAY_VIEWER_OVERLAY", False)
+PLAY_VIEWER_OVERLAY_INTERVAL = env_int("PLAY_VIEWER_OVERLAY_INTERVAL", 6)
+PLAY_VIEWER_OVERLAY_WINDOW_STEPS = env_int("PLAY_VIEWER_OVERLAY_WINDOW_STEPS", 180)
+PLAY_SAVE_CURVES = env_bool("PLAY_SAVE_CURVES", True)
+PLAY_PLOT_STATES = env_bool("PLAY_PLOT_STATES", False)
 # lqr_demo 目标：headless 下零速度、对齐 RL play 在 height=0.18 附近的站立几何。
 LQR_DEMO_HEIGHT_CMD = env_float("LQR_DEMO_HEIGHT_CMD", 0.18)
 LQR_DEMO_INIT_BASE_H = env_float("LQR_DEMO_INIT_BASE_H", 0.16)
@@ -632,6 +662,16 @@ def play(args):
             print("Exported policy as jit script to: ", path)
 
     logger = Logger(env.dt)
+    if PLAY_REALTIME_PLOT:
+        logger.init_realtime_plot(
+            update_interval_steps=PLAY_REALTIME_PLOT_INTERVAL,
+            window_seconds=PLAY_REALTIME_PLOT_WINDOW_S,
+        )
+    use_viewer_overlay = (
+        PLAY_VIEWER_OVERLAY and (not getattr(args, "headless", False)) and (env.viewer is not None)
+    )
+    if use_viewer_overlay:
+        print("[play] 启用 Isaac Gym 窗口内曲线叠加（3D 折线指标）。")
     robot_index = 0  # which robot is used for logging (reduced from 21 due to smaller num_envs for inference)
     joint_index = 1  # which joint is used for logging
     stop_state_log = 1000  # number of steps before plotting states
@@ -646,221 +686,304 @@ def play(args):
     CoM_offset_compensate = True and not USE_KEYBOARD_TELEOP and not lqr_demo
     vel_err_intergral = torch.zeros(env.num_envs, device=env.device)
     vel_cmd = torch.zeros(env.num_envs, device=env.device)
+    track_vx_fn = build_tracking_curve(
+        PLAY_TRACK_VX_CURVE, PLAY_TRACK_VX_BASE, PLAY_TRACK_VX_AMP, PLAY_TRACK_VX_FREQ
+    )
+    track_h_fn = build_tracking_curve(
+        PLAY_TRACK_H_CURVE, PLAY_TRACK_H_BASE, PLAY_TRACK_H_AMP, PLAY_TRACK_H_FREQ
+    )
 
-    for i in range(1000 * int(env.max_episode_length)):
-        if lqr_demo and LQR_DEMO_MAX_STEPS > 0 and i >= LQR_DEMO_MAX_STEPS:
-            print(f"[lqr_demo] reached LQR_DEMO_MAX_STEPS={LQR_DEMO_MAX_STEPS}, exiting.")
-            break
-        if lqr_demo:
-            actions = actions_zero
-        elif ppo_runner.alg.actor_critic.is_sequence:
-            actions, latent = policy(obs, obs_history)
-        else:
-            actions = policy(obs.detach())
+    if (not lqr_demo) and (not USE_KEYBOARD_TELEOP) and PLAY_TRACKING_ENABLED:
+        print(
+            "[play] 启用性能曲线跟踪展示: "
+            f"vx={PLAY_TRACK_VX_CURVE}(base={PLAY_TRACK_VX_BASE:.2f}, amp={PLAY_TRACK_VX_AMP:.2f}, freq={PLAY_TRACK_VX_FREQ:.3f}), "
+            f"h={PLAY_TRACK_H_CURVE}(base={PLAY_TRACK_H_BASE:.3f}, amp={PLAY_TRACK_H_AMP:.3f}, freq={PLAY_TRACK_H_FREQ:.3f})"
+        )
 
-        if USE_KEYBOARD_TELEOP and getattr(env, "_keyboard_teleop_state", None) is not None:
-            apply_keyboard_commands(env)
-        elif lqr_demo:
-            env.commands[:, 0] = LQR_DEMO_VEL_CMD
-            env.commands[:, 2] = LQR_DEMO_HEIGHT_CMD
-            env.commands[:, 3] = 0.0
-        else:
-            env.commands[:, 0] = 2.5
-            env.commands[:, 2] = PLAY_DEFAULT_HEIGHT_CMD  # + 0.07 * np.sin(i * 0.01)
-            env.commands[:, 3] = 0
-
-        if CoM_offset_compensate:
-            if i > 200 and i < 600:
-                vel_cmd[:] = 2.5 * np.clip((i - 200) * 0.05, 0, 1)
-            else:
-                vel_cmd[:] = 0
-            vel_err_intergral += (
-                (vel_cmd - env.base_lin_vel[:, 0])
-                * env.dt
-                * ((vel_cmd - env.base_lin_vel[:, 0]).abs() < 0.5)
+    def _draw_overlay_curve_series(env, anchor, series_dict):
+        lines = []
+        colors = []
+        width = 1.2
+        panel_h = 0.28
+        panel_gap = 0.1
+        # ordered panels: (name, values, y_scale, color)
+        panels = [
+            ("vx_err", series_dict["track_error_vx"], 2.0, (1.0, 0.3, 0.3)),
+            ("h_err", series_dict["track_error_height"], 0.08, (0.3, 0.7, 1.0)),
+            ("score", series_dict["overall_score"], 1.0, (0.3, 1.0, 0.3)),
+        ]
+        for pi, (_, vals, y_scale, rgb) in enumerate(panels):
+            if len(vals) < 2:
+                continue
+            base_x = float(anchor[0] + 0.9)
+            base_y = float(anchor[1] - 0.35)
+            base_z = float(anchor[2] + 0.55 - pi * (panel_h + panel_gap))
+            # axis line
+            lines.append([base_x, base_y, base_z, base_x + width, base_y, base_z])
+            colors.append([0.9, 0.9, 0.9])
+            # zero/center line
+            lines.append(
+                [
+                    base_x,
+                    base_y,
+                    base_z + (0.0 if pi == 2 else panel_h * 0.5),
+                    base_x + width,
+                    base_y,
+                    base_z + (0.0 if pi == 2 else panel_h * 0.5),
+                ]
             )
-            vel_err_intergral = torch.clip(vel_err_intergral, -0.5, 0.5)
-            env.commands[:, 0] = vel_cmd + vel_err_intergral
+            colors.append([0.5, 0.5, 0.5])
+            n = len(vals)
+            for k in range(n - 1):
+                x0 = base_x + width * (k / max(n - 1, 1))
+                x1 = base_x + width * ((k + 1) / max(n - 1, 1))
+                if pi == 2:
+                    y0 = np.clip(vals[k] / max(y_scale, 1e-6), 0.0, 1.0) * panel_h
+                    y1 = np.clip(vals[k + 1] / max(y_scale, 1e-6), 0.0, 1.0) * panel_h
+                else:
+                    y0 = np.clip(vals[k] / max(y_scale, 1e-6), -1.0, 1.0) * panel_h * 0.5
+                    y1 = np.clip(vals[k + 1] / max(y_scale, 1e-6), -1.0, 1.0) * panel_h * 0.5
+                y_ref = 0.0 if pi == 2 else panel_h * 0.5
+                z0 = base_z + y_ref + y0
+                z1 = base_z + y_ref + y1
+                lines.append([x0, base_y, z0, x1, base_y, z1])
+                colors.append(list(rgb))
+        if len(lines) == 0:
+            return
+        vertices = np.asarray(lines, dtype=np.float32)
+        line_colors = np.asarray(colors, dtype=np.float32)
+        env.gym.clear_lines(env.viewer)
+        env.gym.add_lines(env.viewer, env.envs[robot_index], vertices.shape[0], vertices, line_colors)
 
-        obs, _, rews, dones, infos, obs_history = env.step(actions)
-        if lqr_demo and enable_pitch_theta_trim:
-            pitch_all = torch.atan2(env.projected_gravity[:, 0], -env.projected_gravity[:, 2])
-            pitch_dot_all = env.base_ang_vel[:, 1]
-            pitch_err = -pitch_all
-            if i >= pitch_theta_start_step:
-                pitch_theta_i += pitch_err * env.dt
-                pitch_theta_i = torch.clip(
-                    pitch_theta_i, -pitch_theta_i_limit, pitch_theta_i_limit
+    try:
+        for i in range(1000 * int(env.max_episode_length)):
+            if lqr_demo and LQR_DEMO_MAX_STEPS > 0 and i >= LQR_DEMO_MAX_STEPS:
+                print(f"[lqr_demo] reached LQR_DEMO_MAX_STEPS={LQR_DEMO_MAX_STEPS}, exiting.")
+                break
+            if lqr_demo:
+                actions = actions_zero
+            elif ppo_runner.alg.actor_critic.is_sequence:
+                actions, latent = policy(obs, obs_history)
+            else:
+                actions = policy(obs.detach())
+
+            if USE_KEYBOARD_TELEOP and getattr(env, "_keyboard_teleop_state", None) is not None:
+                apply_keyboard_commands(env)
+            elif lqr_demo:
+                env.commands[:, 0] = LQR_DEMO_VEL_CMD
+                env.commands[:, 2] = LQR_DEMO_HEIGHT_CMD
+                env.commands[:, 3] = 0.0
+            else:
+                if PLAY_TRACKING_ENABLED:
+                    t = i * env.dt
+                    env.commands[:, 0] = track_vx_fn(t)
+                    env.commands[:, 2] = track_h_fn(t)
+                else:
+                    env.commands[:, 0] = 2.5
+                    env.commands[:, 2] = PLAY_DEFAULT_HEIGHT_CMD
+                env.commands[:, 3] = 0
+
+            if CoM_offset_compensate:
+                if i > 200 and i < 600:
+                    vel_cmd[:] = 2.5 * np.clip((i - 200) * 0.05, 0, 1)
+                else:
+                    vel_cmd[:] = 0
+                vel_err_intergral += (
+                    (vel_cmd - env.base_lin_vel[:, 0])
+                    * env.dt
+                    * ((vel_cmd - env.base_lin_vel[:, 0]).abs() < 0.5)
                 )
-            theta_ref_cmd = (
-                pitch_theta_base
-                + pitch_theta_kp * pitch_err
-                + pitch_theta_ki * pitch_theta_i
-                - pitch_theta_kd * pitch_dot_all
-            )
-            theta_ref_cmd = torch.clip(
-                theta_ref_cmd, -pitch_theta_limit, pitch_theta_limit
-            )
-            actions_zero[:, 0] = theta_ref_cmd / env.cfg.control.action_scale_theta
-            actions_zero[:, 3] = theta_ref_cmd / env.cfg.control.action_scale_theta
-        if lqr_demo and enable_theta_auto_trim and hasattr(env, "theta0"):
-            # Auto-trim theta reference to reduce static bias between linear model
-            # equilibrium and the actual simulator equilibrium.
-            theta_ref = actions_zero[:, [0, 3]] * env.cfg.control.action_scale_theta
-            theta_err_lr = env.theta0 - theta_ref
-            theta_err_mean = theta_err_lr.mean(dim=1)
-            theta_trim_i += theta_err_mean * env.dt
-            theta_trim_i = torch.clip(theta_trim_i, -theta_trim_limit, theta_trim_limit)
-            theta_ref_new = torch.clip(
-                theta_ref + theta_trim_ki * theta_trim_i.unsqueeze(1),
-                -theta_trim_limit,
-                theta_trim_limit,
-            )
-            actions_zero[:, 0] = theta_ref_new[:, 0] / env.cfg.control.action_scale_theta
-            actions_zero[:, 3] = theta_ref_new[:, 1] / env.cfg.control.action_scale_theta
-        if lqr_demo:
-            if i < h_servo_start_step:
-                h_err = torch.zeros_like(env.base_height)
-            else:
-                h_err = LQR_DEMO_HEIGHT_CMD - env.base_height
-            h_trim_i += h_err * env.dt
-            h_trim_i = torch.clip(h_trim_i, -h_trim_limit, h_trim_limit)
-            # Height-priority outer loop: directly servo L0 reference from measured base height error.
-            l0_action_cmd = l0_action_base + h_kp * h_err + h_ki * h_trim_i
-            l0_action_cmd = torch.clip(l0_action_cmd, -6.0, 6.0)
-            actions_zero[:, 1] = l0_action_cmd
-            actions_zero[:, 4] = l0_action_cmd
-            ff_trim_i += h_err * env.dt
-            ff_trim_i = torch.clip(ff_trim_i, -ff_trim_limit, ff_trim_limit)
-            ff_cmd = ff_base + ff_kp * h_err + ff_ki * ff_trim_i
-            ff_cmd = torch.clip(ff_cmd, ff_min, ff_max)
-            env.cfg.control.feedforward_force = float(ff_cmd.mean().item())
-            # Direct radial-force compensation from height error/vertical speed.
-            h_force_add = (
-                h_force_kp * h_err
-                + h_force_ki * h_trim_i
-                - h_force_kd * env.base_lin_vel[:, 2]
-            )
-            h_force_add = torch.clip(h_force_add, -h_force_max, h_force_max)
-            env._lqr_height_force_add = h_force_add
-        if lqr_demo and i % 200 == 0:
-            base_h = env.base_height[robot_index].item()
-            cmd_h = env.commands[robot_index, 2].item()
-            l0_l = env.L0[robot_index, 0].item() if hasattr(env, "L0") else float("nan")
-            theta_ref = actions_zero[robot_index, 0].item() * env.cfg.control.action_scale_theta
-            l0_ref = actions_zero[robot_index, 1].item() * env.cfg.control.action_scale_l0 + env.cfg.control.l0_offset
-            theta_meas = (
-                env.theta0[robot_index].mean().item()
-                if hasattr(env, "theta0")
-                else float("nan")
-            )
+                vel_err_intergral = torch.clip(vel_err_intergral, -0.5, 0.5)
+                env.commands[:, 0] = vel_cmd + vel_err_intergral
+
+            obs, _, rews, dones, infos, obs_history = env.step(actions)
+            if lqr_demo and enable_pitch_theta_trim:
+                pitch_all = torch.atan2(env.projected_gravity[:, 0], -env.projected_gravity[:, 2])
+                pitch_dot_all = env.base_ang_vel[:, 1]
+                pitch_err = -pitch_all
+                if i >= pitch_theta_start_step:
+                    pitch_theta_i += pitch_err * env.dt
+                    pitch_theta_i = torch.clip(
+                        pitch_theta_i, -pitch_theta_i_limit, pitch_theta_i_limit
+                    )
+                theta_ref_cmd = (
+                    pitch_theta_base
+                    + pitch_theta_kp * pitch_err
+                    + pitch_theta_ki * pitch_theta_i
+                    - pitch_theta_kd * pitch_dot_all
+                )
+                theta_ref_cmd = torch.clip(
+                    theta_ref_cmd, -pitch_theta_limit, pitch_theta_limit
+                )
+                actions_zero[:, 0] = theta_ref_cmd / env.cfg.control.action_scale_theta
+                actions_zero[:, 3] = theta_ref_cmd / env.cfg.control.action_scale_theta
+            if lqr_demo and enable_theta_auto_trim and hasattr(env, "theta0"):
+                theta_ref = actions_zero[:, [0, 3]] * env.cfg.control.action_scale_theta
+                theta_err_lr = env.theta0 - theta_ref
+                theta_err_mean = theta_err_lr.mean(dim=1)
+                theta_trim_i += theta_err_mean * env.dt
+                theta_trim_i = torch.clip(theta_trim_i, -theta_trim_limit, theta_trim_limit)
+                theta_ref_new = torch.clip(
+                    theta_ref + theta_trim_ki * theta_trim_i.unsqueeze(1),
+                    -theta_trim_limit,
+                    theta_trim_limit,
+                )
+                actions_zero[:, 0] = theta_ref_new[:, 0] / env.cfg.control.action_scale_theta
+                actions_zero[:, 3] = theta_ref_new[:, 1] / env.cfg.control.action_scale_theta
+            if lqr_demo:
+                if i < h_servo_start_step:
+                    h_err = torch.zeros_like(env.base_height)
+                else:
+                    h_err = LQR_DEMO_HEIGHT_CMD - env.base_height
+                h_trim_i += h_err * env.dt
+                h_trim_i = torch.clip(h_trim_i, -h_trim_limit, h_trim_limit)
+                l0_action_cmd = l0_action_base + h_kp * h_err + h_ki * h_trim_i
+                l0_action_cmd = torch.clip(l0_action_cmd, -6.0, 6.0)
+                actions_zero[:, 1] = l0_action_cmd
+                actions_zero[:, 4] = l0_action_cmd
+                ff_trim_i += h_err * env.dt
+                ff_trim_i = torch.clip(ff_trim_i, -ff_trim_limit, ff_trim_limit)
+                ff_cmd = ff_base + ff_kp * h_err + ff_ki * ff_trim_i
+                ff_cmd = torch.clip(ff_cmd, ff_min, ff_max)
+                env.cfg.control.feedforward_force = float(ff_cmd.mean().item())
+                h_force_add = (
+                    h_force_kp * h_err
+                    + h_force_ki * h_trim_i
+                    - h_force_kd * env.base_lin_vel[:, 2]
+                )
+                h_force_add = torch.clip(h_force_add, -h_force_max, h_force_max)
+                env._lqr_height_force_add = h_force_add
+            if lqr_demo and i % 200 == 0:
+                base_h = env.base_height[robot_index].item()
+                cmd_h = env.commands[robot_index, 2].item()
+                l0_l = env.L0[robot_index, 0].item() if hasattr(env, "L0") else float("nan")
+                theta_ref = actions_zero[robot_index, 0].item() * env.cfg.control.action_scale_theta
+                l0_ref = actions_zero[robot_index, 1].item() * env.cfg.control.action_scale_l0 + env.cfg.control.l0_offset
+                theta_meas = (
+                    env.theta0[robot_index].mean().item()
+                    if hasattr(env, "theta0")
+                    else float("nan")
+                )
+                pitch = torch.atan2(
+                    env.projected_gravity[robot_index, 0],
+                    -env.projected_gravity[robot_index, 2],
+                ).item()
+                roll = torch.atan2(
+                    env.projected_gravity[robot_index, 1],
+                    -env.projected_gravity[robot_index, 2],
+                ).item()
+                wheel_t = (
+                    env.torque_wheel[robot_index].mean().item()
+                    if hasattr(env, "torque_wheel")
+                    else float("nan")
+                )
+                wheel_l = (
+                    env.torque_wheel[robot_index, 0].item()
+                    if hasattr(env, "torque_wheel")
+                    else float("nan")
+                )
+                wheel_r = (
+                    env.torque_wheel[robot_index, 1].item()
+                    if hasattr(env, "torque_wheel")
+                    else float("nan")
+                )
+                leg_t = (
+                    env.torque_leg[robot_index].mean().item()
+                    if hasattr(env, "torque_leg")
+                    else float("nan")
+                )
+                leg_l = (
+                    env.torque_leg[robot_index, 0].item()
+                    if hasattr(env, "torque_leg")
+                    else float("nan")
+                )
+                leg_r = (
+                    env.torque_leg[robot_index, 1].item()
+                    if hasattr(env, "torque_leg")
+                    else float("nan")
+                )
+                leg_f = (
+                    env.force_leg[robot_index].mean().item()
+                    if hasattr(env, "force_leg")
+                    else float("nan")
+                )
+                theta_err = (
+                    (env.theta0[robot_index] - theta_ref).abs().mean().item()
+                    if hasattr(env, "theta0")
+                    else float("nan")
+                )
+                l0_err = (
+                    (env.L0[robot_index] - l0_ref).abs().mean().item()
+                    if hasattr(env, "L0")
+                    else float("nan")
+                )
+                print(
+                    f"[lqr_demo] step={i:05d} base_h={base_h:.3f} cmd_h={cmd_h:.3f} "
+                    f"vx={env.base_lin_vel[robot_index, 0].item():.3f} "
+                    f"L0={l0_l:.3f} l0_act={actions_zero[robot_index, 1].item():.3f} "
+                    f"ff={env.cfg.control.feedforward_force:.1f} "
+                    f"hF={env._lqr_height_force_add[robot_index].item():.1f} "
+                    f"theta={theta_meas:.3f} theta_ref={theta_ref:.3f} "
+                    f"pitch={pitch:.3f} roll={roll:.3f} Tw={wheel_t:.2f} "
+                    f"TwLR=({wheel_l:.2f},{wheel_r:.2f}) Tp={leg_t:.2f} "
+                    f"TpLR=({leg_l:.2f},{leg_r:.2f}) F={leg_f:.1f} "
+                    f"|theta_err|={theta_err:.3f} |L0_err|={l0_err:.3f}"
+                )
+            elif (not lqr_demo) and i % 200 == 0:
+                pitch = torch.atan2(
+                    env.projected_gravity[robot_index, 0],
+                    -env.projected_gravity[robot_index, 2],
+                ).item()
+                theta_meas = (
+                    env.theta0[robot_index].mean().item()
+                    if hasattr(env, "theta0")
+                    else float("nan")
+                )
+                l0_meas = (
+                    env.L0[robot_index].mean().item()
+                    if hasattr(env, "L0")
+                    else float("nan")
+                )
+                print(
+                    f"[rl_play] step={i:05d} base_h={env.base_height[robot_index].item():.3f} "
+                    f"cmd_h={env.commands[robot_index, 2].item():.3f} "
+                    f"vx={env.base_lin_vel[robot_index, 0].item():.3f} "
+                    f"pitch={pitch:.3f} theta={theta_meas:.3f} L0={l0_meas:.3f}"
+                )
+            if RECORD_FRAMES:
+                if i % 2:
+                    filename = os.path.join(
+                        WHEEL_LEGGED_GYM_ROOT_DIR,
+                        "logs",
+                        train_cfg.runner.experiment_name,
+                        "exported",
+                        "frames",
+                        f"{img_idx}.png",
+                    )
+                    env.gym.write_viewer_image_to_file(env.viewer, filename)
+                    img_idx += 1
+            if MOVE_CAMERA:
+                camera_offset = np.array(env_cfg.viewer.pos)
+                target_position = np.array(
+                    env.base_position[robot_index, :].to(device="cpu")
+                )
+                camera_position = target_position + camera_offset
+                env.set_camera(camera_position, target_position)
+
             pitch = torch.atan2(
-                env.projected_gravity[robot_index, 0],
-                -env.projected_gravity[robot_index, 2],
+                env.projected_gravity[robot_index, 0], -env.projected_gravity[robot_index, 2]
             ).item()
             roll = torch.atan2(
-                env.projected_gravity[robot_index, 1],
-                -env.projected_gravity[robot_index, 2],
+                env.projected_gravity[robot_index, 1], -env.projected_gravity[robot_index, 2]
             ).item()
-            wheel_t = (
-                env.torque_wheel[robot_index].mean().item()
-                if hasattr(env, "torque_wheel")
-                else float("nan")
+            command_x = (
+                vel_cmd[robot_index].item()
+                if CoM_offset_compensate
+                else env.commands[robot_index, 0].item()
             )
-            wheel_l = (
-                env.torque_wheel[robot_index, 0].item()
-                if hasattr(env, "torque_wheel")
-                else float("nan")
-            )
-            wheel_r = (
-                env.torque_wheel[robot_index, 1].item()
-                if hasattr(env, "torque_wheel")
-                else float("nan")
-            )
-            leg_t = (
-                env.torque_leg[robot_index].mean().item()
-                if hasattr(env, "torque_leg")
-                else float("nan")
-            )
-            leg_l = (
-                env.torque_leg[robot_index, 0].item()
-                if hasattr(env, "torque_leg")
-                else float("nan")
-            )
-            leg_r = (
-                env.torque_leg[robot_index, 1].item()
-                if hasattr(env, "torque_leg")
-                else float("nan")
-            )
-            leg_f = (
-                env.force_leg[robot_index].mean().item()
-                if hasattr(env, "force_leg")
-                else float("nan")
-            )
-            theta_err = (
-                (env.theta0[robot_index] - theta_ref).abs().mean().item()
-                if hasattr(env, "theta0")
-                else float("nan")
-            )
-            l0_err = (
-                (env.L0[robot_index] - l0_ref).abs().mean().item()
-                if hasattr(env, "L0")
-                else float("nan")
-            )
-            print(
-                f"[lqr_demo] step={i:05d} base_h={base_h:.3f} cmd_h={cmd_h:.3f} "
-                f"vx={env.base_lin_vel[robot_index, 0].item():.3f} "
-                f"L0={l0_l:.3f} l0_act={actions_zero[robot_index, 1].item():.3f} "
-                f"ff={env.cfg.control.feedforward_force:.1f} "
-                f"hF={env._lqr_height_force_add[robot_index].item():.1f} "
-                f"theta={theta_meas:.3f} theta_ref={theta_ref:.3f} "
-                f"pitch={pitch:.3f} roll={roll:.3f} Tw={wheel_t:.2f} "
-                f"TwLR=({wheel_l:.2f},{wheel_r:.2f}) Tp={leg_t:.2f} "
-                f"TpLR=({leg_l:.2f},{leg_r:.2f}) F={leg_f:.1f} "
-                f"|theta_err|={theta_err:.3f} |L0_err|={l0_err:.3f}"
-            )
-        elif (not lqr_demo) and i % 200 == 0:
-            pitch = torch.atan2(
-                env.projected_gravity[robot_index, 0],
-                -env.projected_gravity[robot_index, 2],
-            ).item()
-            theta_meas = (
-                env.theta0[robot_index].mean().item()
-                if hasattr(env, "theta0")
-                else float("nan")
-            )
-            l0_meas = (
-                env.L0[robot_index].mean().item()
-                if hasattr(env, "L0")
-                else float("nan")
-            )
-            print(
-                f"[rl_play] step={i:05d} base_h={env.base_height[robot_index].item():.3f} "
-                f"cmd_h={env.commands[robot_index, 2].item():.3f} "
-                f"vx={env.base_lin_vel[robot_index, 0].item():.3f} "
-                f"pitch={pitch:.3f} theta={theta_meas:.3f} L0={l0_meas:.3f}"
-            )
-        if RECORD_FRAMES:
-            if i % 2:
-                filename = os.path.join(
-                    WHEEL_LEGGED_GYM_ROOT_DIR,
-                    "logs",
-                    train_cfg.runner.experiment_name,
-                    "exported",
-                    "frames",
-                    f"{img_idx}.png",
-                )
-                env.gym.write_viewer_image_to_file(env.viewer, filename)
-                img_idx += 1
-        if MOVE_CAMERA:
-            camera_offset = np.array(env_cfg.viewer.pos)
-            target_position = np.array(
-                env.base_position[robot_index, :].to(device="cpu")
-            )
-            camera_position = target_position + camera_offset
-            env.set_camera(camera_position, target_position)
-
-        if i < stop_state_log:
+            base_vel_x = env.base_lin_vel[robot_index, 0].item()
+            command_h = env.commands[robot_index, 2].item()
+            base_h = env.base_height[robot_index].item()
             logger.log_states(
                 {
                     "dof_pos_target": actions[robot_index, joint_index].item()
@@ -876,6 +999,10 @@ def play(args):
                     "base_vel_y": env.base_lin_vel[robot_index, 1].item(),
                     "base_vel_z": env.base_lin_vel[robot_index, 2].item(),
                     "base_vel_yaw": env.base_ang_vel[robot_index, 2].item(),
+                    "base_pitch": pitch,
+                    "base_roll": roll,
+                    "track_error_vx": command_x - base_vel_x,
+                    "track_error_height": command_h - base_h,
                     "contact_forces_z": env.contact_forces[
                         robot_index, env.feet_indices, 2
                     ]
@@ -883,10 +1010,7 @@ def play(args):
                     .numpy(),
                 }
             )
-            if CoM_offset_compensate:
-                logger.log_states({"command_x": vel_cmd[robot_index].item()})
-            else:
-                logger.log_states({"command_x": env.commands[robot_index, 0].item()})
+            logger.log_states({"command_x": command_x})
             if latent is not None:
                 logger.log_states(
                     {
@@ -925,16 +1049,48 @@ def play(args):
                             / env.cfg.normalization.obs_scales.dof_vel,
                         }
                     )
-        elif i == stop_state_log:
-            logger.plot_states()
-        if 0 < i < stop_rew_log:
-            episode_info = infos.get("episode")
-            if episode_info:
-                num_episodes = torch.sum(env.reset_buf).item()
-                if num_episodes > 0:
-                    logger.log_rewards(episode_info, num_episodes)
-        elif i == stop_rew_log:
-            logger.print_rewards()
+            if PLAY_REALTIME_PLOT:
+                logger.update_realtime_plot(i)
+            if use_viewer_overlay and (i % PLAY_VIEWER_OVERLAY_INTERVAL == 0):
+                n_tail = PLAY_VIEWER_OVERLAY_WINDOW_STEPS
+                evx_tail = logger.state_log["track_error_vx"][-n_tail:]
+                eh_tail = logger.state_log["track_error_height"][-n_tail:]
+                score_tail = []
+                for a, b in zip(evx_tail, eh_tail):
+                    score_tail.append(
+                        0.5 * (1.0 / (1.0 + abs(float(a))) + 1.0 / (1.0 + 20.0 * abs(float(b))))
+                    )
+                base_anchor = env.base_position[robot_index, :3].detach().cpu().numpy()
+                _draw_overlay_curve_series(
+                    env,
+                    base_anchor,
+                    {
+                        "track_error_vx": evx_tail,
+                        "track_error_height": eh_tail,
+                        "overall_score": score_tail,
+                    },
+                )
+            if i == stop_state_log and PLAY_PLOT_STATES:
+                logger.plot_states()
+            if 0 < i < stop_rew_log:
+                episode_info = infos.get("episode")
+                if episode_info:
+                    num_episodes = torch.sum(env.reset_buf).item()
+                    if num_episodes > 0:
+                        logger.log_rewards(episode_info, num_episodes)
+            elif i == stop_rew_log:
+                logger.print_rewards()
+    finally:
+        if PLAY_REALTIME_PLOT:
+            logger.close_realtime_plot()
+        if PLAY_SAVE_CURVES:
+            output_dir = os.path.join(WHEEL_LEGGED_GYM_ROOT_DIR, "logs", "play_metrics")
+            csv_path, png_path = logger.save_performance_curves(
+                output_dir=output_dir, prefix=args.task
+            )
+            print(f"[play] 性能曲线已保存: CSV={csv_path}")
+            if png_path is not None:
+                print(f"[play] 性能曲线图已保存: PNG={png_path}")
 
 
 if __name__ == "__main__":
