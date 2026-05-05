@@ -85,13 +85,15 @@ python wheel_legged_gym/scripts/play.py --task=wheel_legged_vmc_flat
 
 #### 5. Play — LQR demo (no RL checkpoint, single robot)
 
-Model-based preview: **one env**, **zero** policy actions, virtual leg via **LQR + VMC** (no trained network).
+Model-based preview: **one env**, **zero** policy actions, paper-style 6-state LQR
+(`X=[θ, θ_dot, xb, xb_dot, φ, φ_dot]`, `U=[T, Tp]`) plus VMC (no trained network).
+The demo is tuned for stand-still balance at **0.18 m** height and **0 m/s** velocity.
 
 ```bash
 python wheel_legged_gym/scripts/play.py --task=wheel_legged_vmc_flat --lqr_demo
 ```
 
-Prefer **no `--headless`** so the viewer shows a single robot. This sets **`control_path`** to **`vmc_lqr`** internally.
+This sets **`control_path`** to **`vmc_lqr`** and **`state_model`** to **`paper_ip6`** internally; `--headless` is suitable for stability checks.
 
 #### Common CLI overrides (also apply to train / play where relevant)
 

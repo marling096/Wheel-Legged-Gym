@@ -80,9 +80,10 @@ class LeggedRobotVMC(LeggedRobot):
         if getattr(self.cfg.control, "control_path", "vmc_pd") == "vmc_lqr":
             K_np = build_virtual_leg_lqr_gain(self.cfg)
             self._lqr_K = torch.tensor(K_np, dtype=torch.float, device=self.device)
+            lqr_state_model = getattr(self.cfg.control.lqr, "state_model", "paper6")
             print(
                 "[LeggedRobotVMC] control_path=vmc_lqr "
-                "(Q,R,K printed above; wheel torque loop unchanged)."
+                f"(state_model={lqr_state_model}; Q,R,K printed above)."
             )
 
     def step(self, actions):
@@ -159,10 +160,15 @@ class LeggedRobotVMC(LeggedRobot):
         )
 
         if getattr(self.cfg.control, "control_path", "vmc_pd") == "vmc_lqr":
-            if getattr(self.cfg.control.lqr, "state_model", "paper6") != "legacy4":
+            lqr_state_model = getattr(self.cfg.control.lqr, "state_model", "paper6")
+            if lqr_state_model != "legacy4":
                 vx = self.base_lin_vel[:, 0]
                 vx_cmd = self.commands[:, 0]
                 self._lqr_x_err_integral += (vx - vx_cmd) * self.dt
+                x_i_limit = float(getattr(self.cfg.control.lqr, "x_integral_limit", 2.0))
+                self._lqr_x_err_integral = torch.clip(
+                    self._lqr_x_err_integral, -x_i_limit, x_i_limit
+                )
 
         self._post_physics_step_callback()
 
@@ -410,7 +416,97 @@ class LeggedRobotVMC(LeggedRobot):
         )
 
         if getattr(self.cfg.control, "control_path", "vmc_pd") == "vmc_lqr":
-            if getattr(self.cfg.control.lqr, "state_model", "paper6") == "legacy4":
+            lqr_cfg = self.cfg.control.lqr
+            lqr_state_model = getattr(lqr_cfg, "state_model", "paper6")
+            if lqr_state_model == "paper_ip6":
+                pitch = torch.atan2(
+                    self.projected_gravity[:, 0], -self.projected_gravity[:, 2]
+                )
+                pitch_dot = self.base_ang_vel[:, 1]
+                vx_ref_gain = float(getattr(lqr_cfg, "paper_velocity_ref_gain", 0.5))
+                vx_err = self.base_lin_vel[:, 0] - vx_ref_gain * self.commands[:, 0]
+                x_err = self._lqr_x_err_integral
+                theta_sign = float(getattr(lqr_cfg, "paper_theta_sign", 1.0))
+                pitch_sign = float(getattr(lqr_cfg, "paper_pitch_sign", 1.0))
+                x_l = torch.stack(
+                    (
+                        theta_sign * (self.theta0[:, 0] - theta0_ref[:, 0]),
+                        theta_sign * self.theta0_dot[:, 0],
+                        x_err,
+                        vx_err,
+                        pitch_sign * pitch,
+                        pitch_sign * pitch_dot,
+                    ),
+                    dim=-1,
+                )
+                x_r = torch.stack(
+                    (
+                        theta_sign * (self.theta0[:, 1] - theta0_ref[:, 1]),
+                        theta_sign * self.theta0_dot[:, 1],
+                        x_err,
+                        vx_err,
+                        pitch_sign * pitch,
+                        pitch_sign * pitch_dot,
+                    ),
+                    dim=-1,
+                )
+                u_l = -torch.matmul(x_l, self._lqr_K.T)
+                u_r = -torch.matmul(x_r, self._lqr_K.T)
+                wheel_scale = float(getattr(lqr_cfg, "paper_wheel_torque_scale", 1.0))
+                leg_scale = float(getattr(lqr_cfg, "paper_leg_torque_scale", 1.0))
+                wheel_limit = float(getattr(lqr_cfg, "paper_wheel_torque_limit", 1e6))
+                leg_limit = float(getattr(lqr_cfg, "paper_leg_torque_limit", 1e6))
+                self.torque_wheel = wheel_scale * torch.stack(
+                    (u_l[:, 0], u_r[:, 0]), dim=-1
+                )
+                wheel_pitch_kp = float(getattr(lqr_cfg, "paper_wheel_pitch_kp", 0.0))
+                wheel_pitch_kd = float(getattr(lqr_cfg, "paper_wheel_pitch_kd", 0.0))
+                self.torque_wheel = self.torque_wheel + (
+                    wheel_pitch_kp * pitch + wheel_pitch_kd * pitch_dot
+                ).unsqueeze(1)
+                self.torque_wheel = torch.clip(
+                    self.torque_wheel, -wheel_limit, wheel_limit
+                )
+                lqr_leg_torque = leg_scale * torch.stack(
+                    (u_l[:, 1], u_r[:, 1]), dim=-1
+                )
+                leg_pd_blend = float(getattr(lqr_cfg, "paper_leg_pd_blend", 0.0))
+                if leg_pd_blend > 0.0:
+                    leg_pd_kp = float(getattr(lqr_cfg, "paper_leg_pd_kp", self.theta_kp))
+                    leg_pd_kd = float(getattr(lqr_cfg, "paper_leg_pd_kd", self.theta_kd))
+                    leg_pd_torque = (
+                        leg_pd_kp * (theta0_ref - self.theta0)
+                        - leg_pd_kd * self.theta0_dot
+                    )
+                    self.torque_leg = lqr_leg_torque + leg_pd_blend * leg_pd_torque
+                else:
+                    self.torque_leg = lqr_leg_torque
+                self.torque_leg = torch.clip(self.torque_leg, -leg_limit, leg_limit)
+                self.force_leg = (
+                    self.l0_kp * (l0_ref - self.L0) - self.l0_kd * self.L0_dot
+                )
+                if getattr(self, "_lqr_height_force_enabled", False):
+                    h_force_add = getattr(self, "_lqr_height_force_add", None)
+                    if h_force_add is not None:
+                        self.force_leg = self.force_leg + h_force_add.unsqueeze(1)
+                T1, T2 = self.VMC(
+                    self.force_leg + self.cfg.control.feedforward_force, self.torque_leg
+                )
+                torques = torch.cat(
+                    (
+                        T1[:, 0].unsqueeze(1),
+                        T2[:, 0].unsqueeze(1),
+                        self.torque_wheel[:, 0].unsqueeze(1),
+                        -T1[:, 1].unsqueeze(1),
+                        -T2[:, 1].unsqueeze(1),
+                        self.torque_wheel[:, 1].unsqueeze(1),
+                    ),
+                    axis=1,
+                )
+                return torch.clip(
+                    torques * self.torques_scale, -self.torque_limits, self.torque_limits
+                )
+            if lqr_state_model == "legacy4":
                 x_l = torch.stack(
                     (
                         self.theta0[:, 0] - theta0_ref[:, 0],

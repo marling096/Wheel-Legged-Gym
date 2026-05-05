@@ -6,7 +6,13 @@
 参考 Chen 等 «轮腿式平衡机器人控制»（DOI 10.13976/j.cnki.xk.2023.2533）：
 https://xk.sia.cn/cn/article/doi/10.13976/j.cnki.xk.2023.2533?viewType=HTML
 
-默认 ``state_model=paper6`` 时状态量与原文一致::
+``state_model=paper_ip6`` 时按论文第 1.1.3/1.2.1 节的轮腿倒立摆模型::
+
+    X = [ θ , θ̇ , xb , ẋb , φ , φ̇ ]ᵀ,   U = [ T , Tp ]ᵀ
+
+其中 ``T`` 直接作用到左右轮电机，``Tp`` 作为虚拟腿绕中心轴力矩进入 VMC。
+
+默认 ``state_model=paper6`` 时保留旧实验用虚拟腿坐标模型::
 
     X = [ x , ẋ , θ , θ̇ , l , ẋ_l ]ᵀ
 
@@ -27,9 +33,32 @@ from wheel_legged_gym.utils.wl_urdf_params import parse_wheellegged_urdf_inertia
 
 STATE_DIM_PAPER6 = 6
 STATE_DIM_LEGACY4 = 4
+STATE_DIM_PAPER_IP6 = 6
+
+STATE_SPACE_DESCRIPTION_PAPER_IP6 = """
+━━━━━━━━ vmc_lqr 论文轮腿倒立摆状态空间（state_model=paper_ip6）━━━━━━━━
+状态向量 X ∈ R^6::
+
+    X = [ θ , θ̇ , xb , ẋb , φ , φ̇ ]ᵀ
+
+控制输入 U ∈ R^2::
+
+    U = [ T , Tp ]ᵀ
+
+说明::
+    θ    — 摆杆/虚拟腿与竖直方向夹角误差 [rad]
+    θ̇   — 摆杆/虚拟腿角速度 [rad/s]
+    xb   — 机体纵向位置误差 ∫(ẋb - ẋd)dt [m]
+    ẋb  — 机体纵向速度误差，默认使用 ẋb - 0.5*ẋd [m/s]
+    φ    — 机体俯仰角 [rad]
+    φ̇   — 机体俯仰角速度 [rad/s]
+
+默认 A,B 使用论文在 L0=0.18 m 处给出的线性化矩阵；Q,R 默认使用论文仿真权重。
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
 
 STATE_SPACE_DESCRIPTION_PAPER6 = """
-━━━━━━━━ vmc_lqr 连续域状态空间（论文状态顺序，state_model=paper6）━━━━━━━━
+━━━━━━━━ vmc_lqr 连续域状态空间（旧实验坐标，state_model=paper6）━━━━━━━━
 状态向量 X ∈ R^6::
 
     X = [ x , ẋ , θ , θ̇ , l , ẋ_l ]ᵀ
@@ -148,11 +177,68 @@ def _build_paper_six_state_AB(
     return A, B, coup_diag
 
 
+def _build_published_paper_ip6_AB() -> Tuple[np.ndarray, np.ndarray, Dict]:
+    """论文 L0=0.18 m 处给出的线性化轮腿倒立摆矩阵。
+
+    State: X=[theta, theta_dot, xb, xb_dot, phi, phi_dot]^T
+    Input: U=[wheel_torque_T, virtual_leg_torque_Tp]^T
+    """
+    A = np.array(
+        [
+            [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+            [265.9556, 0.0, 0.0, 0.0, 80.6327, 0.0],
+            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [-25.4562, 0.0, 0.0, 0.0, 1.8637, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            [156.6952, 0.0, 0.0, 0.0, 183.0614, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    B = np.array(
+        [
+            [0.0, 0.0],
+            [-15.1389, 13.8563],
+            [0.0, 0.0],
+            [2.1208, -0.7158],
+            [0.0, 0.0],
+            [-4.2238, 16.8001],
+        ],
+        dtype=np.float64,
+    )
+    meta = {
+        "state_model": "paper_ip6",
+        "source": "Chen et al. 2023, L0=0.18 m published A/B",
+        "state_order": "[theta, theta_dot, xb, xb_dot, phi, phi_dot]",
+        "input_order": "[wheel torque T, virtual leg torque Tp]",
+    }
+    return A, B, meta
+
+
 def _print_lqr_paper6(A, B, Q, R, K, diagnostics: Optional[Dict]) -> None:
     with np.printoptions(precision=8, suppress=True, linewidth=120):
         print(STATE_SPACE_DESCRIPTION_PAPER6.rstrip())
         print(
             "\n========== vmc_lqr: LQR (paper6, continuous-time, one-shot) =========="
+        )
+        if diagnostics:
+            print("[vmc_lqr] Lumped parameters:")
+            for k, v in diagnostics.items():
+                print(f"          {k}: {v}")
+            print("")
+        print("[vmc_lqr] Ẋ = A X + B U")
+        print("[vmc_lqr] A (6x6):\n", A)
+        print("[vmc_lqr] B (6x2):\n", B)
+        print("[vmc_lqr] Q (6x6):\n", Q)
+        print("[vmc_lqr] R (2x2):\n", R)
+        print("[vmc_lqr] K (2x6), U = -K @ X:\n", K)
+        print("========================================================================\n")
+
+
+def _print_lqr_paper_ip6(A, B, Q, R, K, diagnostics: Optional[Dict]) -> None:
+    with np.printoptions(precision=8, suppress=True, linewidth=120):
+        print(STATE_SPACE_DESCRIPTION_PAPER_IP6.rstrip())
+        print(
+            "\n========== vmc_lqr: LQR (paper_ip6, published A/B, continuous-time) =========="
         )
         if diagnostics:
             print("[vmc_lqr] Lumped parameters:")
@@ -311,6 +397,9 @@ def build_virtual_leg_decoupled_state_matrices(
     if bal_mode not in ("paper", "legacy"):
         bal_mode = "paper"
 
+    if state_model == "paper_ip6":
+        return _build_published_paper_ip6_AB()
+
     base_xyz = urdf.get("base_com_xyz")
     base_com_z = float(base_xyz[2]) if base_xyz is not None else None
 
@@ -426,7 +515,25 @@ def build_virtual_leg_lqr_gain(cfg, gravity: float = 9.81) -> np.ndarray:
     A, B, meta = build_virtual_leg_decoupled_state_matrices(cfg, gravity=gravity)
     lqr = cfg.control.lqr
 
-    if meta.get("state_model") == "legacy4":
+    if meta.get("state_model") == "paper_ip6":
+        Q = np.diag(
+            [
+                float(getattr(lqr, "q_paper_theta", 1.0)),
+                float(getattr(lqr, "q_paper_theta_dot", 1.0)),
+                float(getattr(lqr, "q_paper_x", 500.0)),
+                float(getattr(lqr, "q_paper_x_dot", 100.0)),
+                float(getattr(lqr, "q_paper_phi", 5000.0)),
+                float(getattr(lqr, "q_paper_phi_dot", 1.0)),
+            ]
+        )
+        R = np.diag(
+            [
+                float(getattr(lqr, "r_paper_wheel_torque", 1.0)),
+                float(getattr(lqr, "r_paper_leg_torque", 0.25)),
+            ]
+        )
+        diag_print = dict(meta)
+    elif meta.get("state_model") == "legacy4":
         Q = np.diag(
             [
                 float(lqr.q_theta),
@@ -439,7 +546,11 @@ def build_virtual_leg_lqr_gain(cfg, gravity: float = 9.81) -> np.ndarray:
         B_B = meta["B_B"]
         A_L = meta["A_L"]
         B_L = meta["B_L"]
-        diag_print = {k: v for k, v in meta.items() if k not in ("A_B", "B_B", "A_L", "B_L")}
+        diag_print = {
+            k: v
+            for k, v in meta.items()
+            if k not in ("A_B", "B_B", "A_L", "B_L")
+        }
     else:
         Q = np.diag(
             [
@@ -454,12 +565,15 @@ def build_virtual_leg_lqr_gain(cfg, gravity: float = 9.81) -> np.ndarray:
         A_B = B_B = A_L = B_L = None
         diag_print = dict(meta)
 
-    R = np.diag([float(lqr.r_torque), float(lqr.r_force)])
+    if meta.get("state_model") != "paper_ip6":
+        R = np.diag([float(lqr.r_torque), float(lqr.r_force)])
 
     P = solve_continuous_are(A, B, Q, R)
     K = np.linalg.solve(R, B.T @ P)
 
-    if meta.get("state_model") == "legacy4":
+    if meta.get("state_model") == "paper_ip6":
+        _print_lqr_paper_ip6(A, B, Q, R, K, diagnostics=diag_print)
+    elif meta.get("state_model") == "legacy4":
         _print_lqr_legacy4(A_B, B_B, A_L, B_L, A, B, Q, R, K, diagnostics=diag_print)
     else:
         _print_lqr_paper6(A, B, Q, R, K, diagnostics=diag_print)

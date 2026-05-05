@@ -61,6 +61,7 @@ class WheelLeggedVMCCfg(WheelLeggedCfg):
         control_path = "vmc_pd"
 
         class lqr:
+            # paper_ip6: X=[θ, θ̇, xb, ẋb, φ, φ̇]ᵀ, U=[wheel T, leg Tp]ᵀ（论文路径）
             # paper6: X = [x, ẋ, θ, θ̇, l, ẋ_l]ᵀ；legacy4: X = [Δθ, θ̇, ΔL, Ḻ]ᵀ
             state_model = "legacy4"
             # upright-first tuning for paper6:
@@ -75,6 +76,30 @@ class WheelLeggedVMCCfg(WheelLeggedCfg):
             q_L_dot = 28.0
             r_torque = 1.2e-3
             r_force = 2.0e-4
+
+            # Headless lqr_demo stand-still tuning at 0.18 m:
+            # keep longitudinal tracking weak, prioritize leg/body pitch damping.
+            q_paper_theta = 600.0
+            q_paper_theta_dot = 45.0
+            q_paper_x = 5.0
+            q_paper_x_dot = 8.0
+            q_paper_phi = 12000.0
+            q_paper_phi_dot = 120.0
+            r_paper_wheel_torque = 6.0
+            r_paper_leg_torque = 0.8
+            paper_velocity_ref_gain = 0.0
+            paper_theta_sign = 1.0
+            paper_pitch_sign = 1.0
+            paper_wheel_torque_scale = 0.20
+            paper_leg_torque_scale = 0.05
+            paper_wheel_torque_limit = 10.0
+            paper_wheel_pitch_kp = 0.0
+            paper_wheel_pitch_kd = 0.0
+            paper_leg_torque_limit = 60.0
+            paper_leg_pd_blend = 1.0
+            paper_leg_pd_kp = 90.0
+            paper_leg_pd_kd = 5.0
+            x_integral_limit = 2.0
 
             # LQR plant linearization (see wl_virtual_lqr.py; Chen et al. 2023 IP + decoupled length).
             balance_linearization = "paper"  # "paper" | "legacy"

@@ -33,7 +33,10 @@ import os
 from collections import deque
 import statistics
 
-from torch.utils.tensorboard import SummaryWriter
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ModuleNotFoundError:
+    SummaryWriter = None
 import torch
 
 from wheel_legged_gym.rsl_rl.algorithms import PPO
@@ -91,6 +94,11 @@ class OnPolicyRunner:
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # initialize writer
         if self.log_dir is not None and self.writer is None:
+            if SummaryWriter is None:
+                raise ModuleNotFoundError(
+                    "tensorboard is required for training logs. Install it with "
+                    "`pip install tensorboard`, or run a mode that does not call learn()."
+                )
             self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(

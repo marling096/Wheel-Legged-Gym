@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
-import git
+try:
+    import git
+except ModuleNotFoundError:
+    git = None
 import os
 import pathlib
 import torch
@@ -59,6 +62,9 @@ def unpad_trajectories(trajectories, masks):
 
 
 def store_code_state(logdir, repositories) -> list:
+    if git is None:
+        print("GitPython is not installed; skipping git diff snapshot.")
+        return []
     git_log_dir = os.path.join(logdir, "git")
     os.makedirs(git_log_dir, exist_ok=True)
     file_paths = []

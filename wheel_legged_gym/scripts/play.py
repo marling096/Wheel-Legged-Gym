@@ -31,23 +31,42 @@
 from wheel_legged_gym import WHEEL_LEGGED_GYM_ROOT_DIR
 import os
 
+import numpy as np
+
+if not hasattr(np, "float"):
+    np.float = float
+
 import isaacgym
 from isaacgym.torch_utils import *
-from isaacgym import gymapi
+from isaacgym import gymapi, gymtorch
 from wheel_legged_gym.envs import *
 from wheel_legged_gym.utils import get_args, export_policy_as_jit, task_registry, Logger
 
-import numpy as np
 import torch
 import math
 
 # 脚本直接运行时可在 __main__ 中改为 True；若从其它模块 import play()，请先设置该变量
 USE_KEYBOARD_TELEOP = False
 
+
+def env_float(name, default):
+    return float(os.environ.get(name, default))
+
+
+def env_int(name, default):
+    return int(os.environ.get(name, default))
+
+
 # RL play 模式（非 --lqr_demo）每步写入的默认高度指令
 PLAY_DEFAULT_HEIGHT_CMD = 0.18
-# lqr_demo 目标高度（按 RL 可达区先设为 0.10）
-LQR_DEMO_HEIGHT_CMD = 0.10
+# lqr_demo 目标：headless 下零速度、对齐 RL play 在 height=0.18 附近的站立几何。
+LQR_DEMO_HEIGHT_CMD = env_float("LQR_DEMO_HEIGHT_CMD", 0.18)
+LQR_DEMO_INIT_BASE_H = env_float("LQR_DEMO_INIT_BASE_H", 0.16)
+LQR_DEMO_VEL_CMD = env_float("LQR_DEMO_VEL_CMD", 0.0)
+LQR_DEMO_L0_STAND_REF = env_float("LQR_DEMO_L0_STAND_REF", 0.22)
+LQR_DEMO_THETA_REF = env_float("LQR_DEMO_THETA_REF", -0.07)
+LQR_DEMO_FEEDFORWARD_FORCE = env_float("LQR_DEMO_FEEDFORWARD_FORCE", 40.0)
+LQR_DEMO_MAX_STEPS = env_int("LQR_DEMO_MAX_STEPS", 0)
 
 
 def nominal_virtual_leg_from_cfg(env_cfg):
@@ -65,6 +84,39 @@ def nominal_virtual_leg_from_cfg(env_cfg):
     L0 = math.sqrt(end_x * end_x + end_y * end_y)
     theta0 = math.atan2(end_y, end_x) - math.pi / 2.0
     return L0, theta0
+
+
+def virtual_leg_ik_from_cfg(env_cfg, l0_ref, theta0_ref):
+    """Return joint angles matching the VMC virtual-leg coordinates."""
+    l1 = float(env_cfg.asset.l1)
+    l2 = float(env_cfg.asset.l2)
+    offset = float(env_cfg.asset.offset)
+    end_x = float(l0_ref) * math.cos(float(theta0_ref) + math.pi / 2.0)
+    end_y = float(l0_ref) * math.sin(float(theta0_ref) + math.pi / 2.0)
+    rel_x = end_x - offset
+    rel_y = end_y
+    cos_q2 = (rel_x * rel_x + rel_y * rel_y - l1 * l1 - l2 * l2) / (2.0 * l1 * l2)
+    cos_q2 = float(np.clip(cos_q2, -0.999, 0.999))
+    q2 = math.acos(cos_q2)
+    q1 = math.atan2(rel_y, rel_x) - math.atan2(l2 * math.sin(q2), l1 + l2 * math.cos(q2))
+    return q1, q2 - math.pi / 2.0
+
+
+def apply_lqr_demo_initial_pose(env, joint_angles, base_height):
+    name_to_idx = {name: idx for idx, name in enumerate(env.dof_names)}
+    for name, angle in joint_angles.items():
+        idx = name_to_idx[name]
+        env.raw_default_dof_pos[idx] = float(angle)
+        env.default_dof_pos[:, idx] = float(angle)
+        env.dof_pos[:, idx] = float(angle)
+        env.dof_vel[:, idx] = 0.0
+    env.root_states[:, 2] = float(base_height)
+    env.root_states[:, 7:13] = 0.0
+    env.last_base_position[:] = env.root_states[:, :3]
+    env.last_dof_pos[:] = env.dof_pos
+    env.last_dof_vel[:] = 0.0
+    env.gym.set_actor_root_state_tensor(env.sim, gymtorch.unwrap_tensor(env.root_states))
+    env.gym.set_dof_state_tensor(env.sim, gymtorch.unwrap_tensor(env.dof_state))
 
 
 def install_keyboard_teleop(env, env_cfg):
@@ -197,6 +249,42 @@ def play(args):
     if lqr_demo and hasattr(env_cfg.control, "control_path"):
         # make_env 内 update_cfg_from_args 会用 args.control_path 覆盖 cfg，此处同步 args
         args.control_path = "vmc_lqr"
+        if hasattr(env_cfg.control, "lqr"):
+            env_cfg.control.lqr.state_model = "paper_ip6"
+            lqr_cfg = env_cfg.control.lqr
+            lqr_cfg.paper_theta_sign = env_float(
+                "LQR_PAPER_THETA_SIGN", lqr_cfg.paper_theta_sign
+            )
+            lqr_cfg.paper_pitch_sign = env_float(
+                "LQR_PAPER_PITCH_SIGN", lqr_cfg.paper_pitch_sign
+            )
+            lqr_cfg.paper_wheel_torque_scale = env_float(
+                "LQR_PAPER_WHEEL_SCALE", lqr_cfg.paper_wheel_torque_scale
+            )
+            lqr_cfg.paper_leg_torque_scale = env_float(
+                "LQR_PAPER_LEG_SCALE", lqr_cfg.paper_leg_torque_scale
+            )
+            lqr_cfg.paper_wheel_torque_limit = env_float(
+                "LQR_PAPER_WHEEL_LIMIT", lqr_cfg.paper_wheel_torque_limit
+            )
+            lqr_cfg.paper_wheel_pitch_kp = env_float(
+                "LQR_PAPER_WHEEL_PITCH_KP", lqr_cfg.paper_wheel_pitch_kp
+            )
+            lqr_cfg.paper_wheel_pitch_kd = env_float(
+                "LQR_PAPER_WHEEL_PITCH_KD", lqr_cfg.paper_wheel_pitch_kd
+            )
+            lqr_cfg.paper_leg_torque_limit = env_float(
+                "LQR_PAPER_LEG_LIMIT", lqr_cfg.paper_leg_torque_limit
+            )
+            lqr_cfg.paper_leg_pd_kp = env_float(
+                "LQR_PAPER_LEG_PD_KP", lqr_cfg.paper_leg_pd_kp
+            )
+            lqr_cfg.paper_leg_pd_kd = env_float(
+                "LQR_PAPER_LEG_PD_KD", lqr_cfg.paper_leg_pd_kd
+            )
+            lqr_cfg.paper_leg_pd_blend = env_float(
+                "LQR_PAPER_LEG_PD_BLEND", lqr_cfg.paper_leg_pd_blend
+            )
     if USE_KEYBOARD_TELEOP:
         # Avoid LeggedRobot._post_physics_step_callback periodically overwriting commands.
         env_cfg.commands.resampling_time = 1e9
@@ -206,6 +294,26 @@ def play(args):
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 4)  # reduced for inference to save GPU memory
     if lqr_demo:
         env_cfg.env.num_envs = 1
+        env_cfg.commands.ranges.lin_vel_x = [LQR_DEMO_VEL_CMD, LQR_DEMO_VEL_CMD]
+        env_cfg.commands.ranges.ang_vel_yaw = [0.0, 0.0]
+        env_cfg.commands.ranges.height = [LQR_DEMO_HEIGHT_CMD, LQR_DEMO_HEIGHT_CMD]
+        env_cfg.commands.ranges.heading = [0.0, 0.0]
+        env_cfg.control.feedforward_force = LQR_DEMO_FEEDFORWARD_FORCE
+        lf0, lf1 = virtual_leg_ik_from_cfg(
+            env_cfg, LQR_DEMO_L0_STAND_REF, LQR_DEMO_THETA_REF
+        )
+        lqr_initial_joint_angles = {
+            "lf0_Joint": lf0,
+            "lf1_Joint": lf1,
+            "rf0_Joint": -lf0,
+            "rf1_Joint": -lf1,
+        }
+        env_cfg.init_state.default_joint_angles.update(lqr_initial_joint_angles)
+        env_cfg.init_state.pos[2] = LQR_DEMO_INIT_BASE_H
+        print(
+            "[play] LQR 演示初始关节 IK: "
+            f"lf0={lf0:.3f}, lf1={lf1:.3f}, rf0={-lf0:.3f}, rf1={-lf1:.3f}"
+        )
     env_cfg.terrain.num_rows = 5
     env_cfg.terrain.num_cols = 10
     env_cfg.terrain.max_init_terrain_level = env_cfg.terrain.num_rows - 1
@@ -228,6 +336,10 @@ def play(args):
 
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
+    if lqr_demo:
+        apply_lqr_demo_initial_pose(
+            env, lqr_initial_joint_angles, base_height=LQR_DEMO_INIT_BASE_H
+        )
     if USE_KEYBOARD_TELEOP:
         if getattr(args, "headless", False) or env.viewer is None:
             print("USE_KEYBOARD_TELEOP 需要可视化窗口（不要使用 --headless）。")
@@ -249,9 +361,12 @@ def play(args):
             )
         print(
             "[play] LQR 演示：单环境、不加载 RL 策略；"
-            "虚拟腿由 LQR+K 矩阵控制，动作为零（仅站姿/指令 hold）。"
+            "按论文 6 状态 LQR 输出车轮力矩 T 与虚拟腿力矩 Tp。"
         )
-        print(f"[play] LQR 演示目标高度: {LQR_DEMO_HEIGHT_CMD} m（RL 可达区）")
+        print(
+            f"[play] LQR 演示目标高度: {LQR_DEMO_HEIGHT_CMD} m；"
+            f"速度指令: {LQR_DEMO_VEL_CMD} m/s"
+        )
         actions_zero = torch.zeros(
             env.num_envs, env.num_actions, device=env.device, dtype=torch.float
         )
@@ -266,6 +381,7 @@ def play(args):
         if hasattr(env, "theta0"):
             theta_runtime = env.theta0[0].detach().cpu().numpy()
             theta_nominal = float(theta_runtime.mean())
+        theta_nominal = LQR_DEMO_THETA_REF
         actions_zero[:, 0] = float(theta_nominal) / max(theta_scale, 1e-6)
         actions_zero[:, 3] = float(theta_nominal) / max(theta_scale, 1e-6)
 
@@ -276,8 +392,11 @@ def play(args):
         if hasattr(env, "L0"):
             l0_nominal = float(env.L0[0].mean().item())
         nominal_base_h = float(env_cfg.init_state.pos[2])
-        l0_height_gain = 0.6
-        l0_target = l0_nominal + l0_height_gain * (LQR_DEMO_HEIGHT_CMD - nominal_base_h)
+        l0_height_gain = 0.0
+        l0_target = max(
+            LQR_DEMO_L0_STAND_REF,
+            l0_nominal + l0_height_gain * (LQR_DEMO_HEIGHT_CMD - nominal_base_h),
+        )
         l0_action_from_height = (l0_target - l0_offset) / max(l0_scale, 1e-6)
         l0_action_from_height = float(l0_action_from_height)
         actions_zero[:, 1] = l0_action_from_height
@@ -291,29 +410,31 @@ def play(args):
         # Outer-loop height servo for lqr_demo only: slowly trim L0 references so that
         # base height tracks LQR_DEMO_HEIGHT_CMD despite model mismatch.
         h_trim_i = torch.zeros(env.num_envs, device=env.device, dtype=torch.float)
-        h_kp = 2.8
-        h_ki = 0.9
-        h_trim_limit = 1.2
+        h_kp = 0.3
+        h_ki = 0.05
+        h_trim_limit = 0.4
+        h_servo_start_step = 2000
         l0_action_base = torch.full(
             (env.num_envs,), l0_action_from_height, device=env.device, dtype=torch.float
         )
         ff_base = float(env.cfg.control.feedforward_force)
         ff_trim_i = torch.zeros(env.num_envs, device=env.device, dtype=torch.float)
-        ff_kp = 320.0
-        ff_ki = 120.0
-        ff_trim_limit = 0.35
-        ff_min, ff_max = 20.0, 260.0
+        ff_kp = 12.0
+        ff_ki = 2.0
+        ff_trim_limit = 0.2
+        ff_min = env_float("LQR_DEMO_FF_MIN", 25.0)
+        ff_max = env_float("LQR_DEMO_FF_MAX", 80.0)
         # Height-priority direct force loop (demo only): inject additive radial force.
         env._lqr_height_force_enabled = True
         env._lqr_height_force_add = torch.zeros(
             env.num_envs, device=env.device, dtype=torch.float
         )
-        h_force_kp = 900.0
-        h_force_ki = 240.0
-        h_force_kd = 120.0
-        h_force_max = 220.0
+        h_force_kp = env_float("LQR_DEMO_H_FORCE_KP", 35.0)
+        h_force_ki = env_float("LQR_DEMO_H_FORCE_KI", 6.0)
+        h_force_kd = env_float("LQR_DEMO_H_FORCE_KD", 12.0)
+        h_force_max = env_float("LQR_DEMO_H_FORCE_MAX", 25.0)
         enable_theta_auto_trim = (
-            getattr(env.cfg.control.lqr, "state_model", "paper6") != "legacy4"
+            getattr(env.cfg.control.lqr, "state_model", "paper6") == "paper6"
         )
         theta_trim_i = torch.zeros(env.num_envs, device=env.device, dtype=torch.float)
         theta_trim_ki = 0.015
@@ -353,6 +474,9 @@ def play(args):
     vel_cmd = torch.zeros(env.num_envs, device=env.device)
 
     for i in range(1000 * int(env.max_episode_length)):
+        if lqr_demo and LQR_DEMO_MAX_STEPS > 0 and i >= LQR_DEMO_MAX_STEPS:
+            print(f"[lqr_demo] reached LQR_DEMO_MAX_STEPS={LQR_DEMO_MAX_STEPS}, exiting.")
+            break
         if lqr_demo:
             actions = actions_zero
         elif ppo_runner.alg.actor_critic.is_sequence:
@@ -363,7 +487,7 @@ def play(args):
         if USE_KEYBOARD_TELEOP and getattr(env, "_keyboard_teleop_state", None) is not None:
             apply_keyboard_commands(env)
         elif lqr_demo:
-            env.commands[:, 0] = 0.0
+            env.commands[:, 0] = LQR_DEMO_VEL_CMD
             env.commands[:, 2] = LQR_DEMO_HEIGHT_CMD
             env.commands[:, 3] = 0.0
         else:
@@ -401,7 +525,10 @@ def play(args):
             actions_zero[:, 0] = theta_ref_new[:, 0] / env.cfg.control.action_scale_theta
             actions_zero[:, 3] = theta_ref_new[:, 1] / env.cfg.control.action_scale_theta
         if lqr_demo:
-            h_err = LQR_DEMO_HEIGHT_CMD - env.base_height
+            if i < h_servo_start_step:
+                h_err = torch.zeros_like(env.base_height)
+            else:
+                h_err = LQR_DEMO_HEIGHT_CMD - env.base_height
             h_trim_i += h_err * env.dt
             h_trim_i = torch.clip(h_trim_i, -h_trim_limit, h_trim_limit)
             # Height-priority outer loop: directly servo L0 reference from measured base height error.
@@ -415,7 +542,11 @@ def play(args):
             ff_cmd = torch.clip(ff_cmd, ff_min, ff_max)
             env.cfg.control.feedforward_force = float(ff_cmd.mean().item())
             # Direct radial-force compensation from height error/vertical speed.
-            h_force_add = h_force_kp * h_err + h_force_ki * h_trim_i - h_force_kd * env.base_lin_vel[:, 2]
+            h_force_add = (
+                h_force_kp * h_err
+                + h_force_ki * h_trim_i
+                - h_force_kd * env.base_lin_vel[:, 2]
+            )
             h_force_add = torch.clip(h_force_add, -h_force_max, h_force_max)
             env._lqr_height_force_add = h_force_add
         if lqr_demo and i % 200 == 0:
@@ -424,6 +555,30 @@ def play(args):
             l0_l = env.L0[robot_index, 0].item() if hasattr(env, "L0") else float("nan")
             theta_ref = actions_zero[robot_index, 0].item() * env.cfg.control.action_scale_theta
             l0_ref = actions_zero[robot_index, 1].item() * env.cfg.control.action_scale_l0 + env.cfg.control.l0_offset
+            theta_meas = (
+                env.theta0[robot_index].mean().item()
+                if hasattr(env, "theta0")
+                else float("nan")
+            )
+            pitch = torch.atan2(
+                env.projected_gravity[robot_index, 0],
+                -env.projected_gravity[robot_index, 2],
+            ).item()
+            wheel_t = (
+                env.torque_wheel[robot_index].mean().item()
+                if hasattr(env, "torque_wheel")
+                else float("nan")
+            )
+            leg_t = (
+                env.torque_leg[robot_index].mean().item()
+                if hasattr(env, "torque_leg")
+                else float("nan")
+            )
+            leg_f = (
+                env.force_leg[robot_index].mean().item()
+                if hasattr(env, "force_leg")
+                else float("nan")
+            )
             theta_err = (
                 (env.theta0[robot_index] - theta_ref).abs().mean().item()
                 if hasattr(env, "theta0")
@@ -439,14 +594,30 @@ def play(args):
                 f"L0={l0_l:.3f} l0_act={actions_zero[robot_index, 1].item():.3f} "
                 f"ff={env.cfg.control.feedforward_force:.1f} "
                 f"hF={env._lqr_height_force_add[robot_index].item():.1f} "
-                f"theta_ref={theta_ref:.3f} "
+                f"theta={theta_meas:.3f} theta_ref={theta_ref:.3f} "
+                f"pitch={pitch:.3f} Tw={wheel_t:.2f} Tp={leg_t:.2f} F={leg_f:.1f} "
                 f"|theta_err|={theta_err:.3f} |L0_err|={l0_err:.3f}"
             )
         elif (not lqr_demo) and i % 200 == 0:
+            pitch = torch.atan2(
+                env.projected_gravity[robot_index, 0],
+                -env.projected_gravity[robot_index, 2],
+            ).item()
+            theta_meas = (
+                env.theta0[robot_index].mean().item()
+                if hasattr(env, "theta0")
+                else float("nan")
+            )
+            l0_meas = (
+                env.L0[robot_index].mean().item()
+                if hasattr(env, "L0")
+                else float("nan")
+            )
             print(
                 f"[rl_play] step={i:05d} base_h={env.base_height[robot_index].item():.3f} "
                 f"cmd_h={env.commands[robot_index, 2].item():.3f} "
-                f"vx={env.base_lin_vel[robot_index, 0].item():.3f}"
+                f"vx={env.base_lin_vel[robot_index, 0].item():.3f} "
+                f"pitch={pitch:.3f} theta={theta_meas:.3f} L0={l0_meas:.3f}"
             )
         if RECORD_FRAMES:
             if i % 2:
