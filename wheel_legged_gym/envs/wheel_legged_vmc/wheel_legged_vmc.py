@@ -418,10 +418,192 @@ class LeggedRobotVMC(LeggedRobot):
         if getattr(self.cfg.control, "control_path", "vmc_pd") == "vmc_lqr":
             lqr_cfg = self.cfg.control.lqr
             lqr_state_model = getattr(lqr_cfg, "state_model", "paper6")
-            if lqr_state_model == "paper_ip6":
-                pitch = torch.atan2(
-                    self.projected_gravity[:, 0], -self.projected_gravity[:, 2]
+            pitch = torch.atan2(
+                self.projected_gravity[:, 0], -self.projected_gravity[:, 2]
+            )
+            pitch_dot = self.base_ang_vel[:, 1]
+            roll = torch.atan2(
+                self.projected_gravity[:, 1], -self.projected_gravity[:, 2]
+            )
+            roll_dot = self.base_ang_vel[:, 0]
+            if lqr_state_model == "sjtu10":
+                quat = self.base_quat
+                yaw = torch.atan2(
+                    2.0 * (quat[:, 3] * quat[:, 2] + quat[:, 0] * quat[:, 1]),
+                    1.0 - 2.0 * (quat[:, 1] * quat[:, 1] + quat[:, 2] * quat[:, 2]),
                 )
+                pitch_sign = float(getattr(lqr_cfg, "sjtu_pitch_sign", 1.0))
+                theta_sign = float(getattr(lqr_cfg, "sjtu_theta_sign", 1.0))
+                yaw_sign = float(getattr(lqr_cfg, "sjtu_yaw_sign", 1.0))
+                x_sjtu = torch.stack(
+                    (
+                        self._lqr_x_err_integral,
+                        self.base_lin_vel[:, 0] - self.commands[:, 0],
+                        yaw_sign * wrap_to_pi(yaw - self.commands[:, 3]),
+                        yaw_sign * (self.base_ang_vel[:, 2] - self.commands[:, 1]),
+                        theta_sign * (self.theta0[:, 0] - theta0_ref[:, 0]),
+                        theta_sign * self.theta0_dot[:, 0],
+                        theta_sign * (self.theta0[:, 1] - theta0_ref[:, 1]),
+                        theta_sign * self.theta0_dot[:, 1],
+                        pitch_sign * pitch,
+                        pitch_sign * pitch_dot,
+                    ),
+                    dim=-1,
+                )
+                u = -torch.matmul(x_sjtu, self._lqr_K.T)
+                wheel_scale = float(getattr(lqr_cfg, "sjtu_wheel_torque_scale", 1.0))
+                leg_scale = float(getattr(lqr_cfg, "sjtu_leg_torque_scale", 1.0))
+                wheel_limit = float(getattr(lqr_cfg, "sjtu_wheel_torque_limit", 1e6))
+                leg_limit = float(getattr(lqr_cfg, "sjtu_leg_torque_limit", 1e6))
+                wheel_lr_scale = torch.tensor(
+                    [
+                        float(getattr(lqr_cfg, "sjtu_wheel_left_scale", 1.0)),
+                        float(getattr(lqr_cfg, "sjtu_wheel_right_scale", 1.0)),
+                    ],
+                    device=self.device,
+                    dtype=torch.float,
+                )
+                leg_lr_scale = torch.tensor(
+                    [
+                        float(getattr(lqr_cfg, "sjtu_leg_left_scale", 1.0)),
+                        float(getattr(lqr_cfg, "sjtu_leg_right_scale", 1.0)),
+                    ],
+                    device=self.device,
+                    dtype=torch.float,
+                )
+                self.torque_wheel = torch.clip(
+                    wheel_scale * u[:, 0:2] * wheel_lr_scale.unsqueeze(0),
+                    -wheel_limit,
+                    wheel_limit,
+                )
+                if bool(getattr(lqr_cfg, "sjtu_balance_wheel_only", False)):
+                    wheel_balance = self.torque_wheel.mean(dim=1, keepdim=True)
+                    self.torque_wheel = wheel_balance.repeat(1, 2)
+                wheel_pitch_kp = float(getattr(lqr_cfg, "sjtu_wheel_pitch_kp", 0.0))
+                wheel_pitch_kd = float(getattr(lqr_cfg, "sjtu_wheel_pitch_kd", 0.0))
+                if wheel_pitch_kp != 0.0 or wheel_pitch_kd != 0.0:
+                    self.torque_wheel = self.torque_wheel + (
+                        wheel_pitch_kp * pitch + wheel_pitch_kd * pitch_dot
+                    ).unsqueeze(1)
+                    self.torque_wheel = torch.clip(
+                        self.torque_wheel, -wheel_limit, wheel_limit
+                    )
+                leg_lqr_raw = u[:, 2:4]
+                leg_map = torch.tensor(
+                    [
+                        [
+                            float(getattr(lqr_cfg, "sjtu_leg_map_ll", 1.0)),
+                            float(getattr(lqr_cfg, "sjtu_leg_map_lr", 0.0)),
+                        ],
+                        [
+                            float(getattr(lqr_cfg, "sjtu_leg_map_rl", 0.0)),
+                            float(getattr(lqr_cfg, "sjtu_leg_map_rr", 1.0)),
+                        ],
+                    ],
+                    device=self.device,
+                    dtype=torch.float,
+                )
+                leg_lqr_mapped = torch.matmul(leg_lqr_raw, leg_map.T)
+                self.torque_leg = (
+                    leg_scale * leg_lqr_mapped * leg_lr_scale.unsqueeze(0)
+                )
+                leg_pd_blend = float(getattr(lqr_cfg, "sjtu_leg_pd_blend", 0.0))
+                if leg_pd_blend > 0.0:
+                    leg_pd_kp = float(getattr(lqr_cfg, "sjtu_leg_pd_kp", self.theta_kp))
+                    leg_pd_kd = float(getattr(lqr_cfg, "sjtu_leg_pd_kd", self.theta_kd))
+                    leg_pd_torque = (
+                        leg_pd_kp * (theta0_ref - self.theta0)
+                        - leg_pd_kd * self.theta0_dot
+                    )
+                    self.torque_leg = self.torque_leg + leg_pd_blend * leg_pd_torque
+                leg_roll_kp = float(getattr(lqr_cfg, "sjtu_leg_roll_kp", 0.0))
+                leg_roll_kd = float(getattr(lqr_cfg, "sjtu_leg_roll_kd", 0.0))
+                if leg_roll_kp != 0.0 or leg_roll_kd != 0.0:
+                    roll_torque = leg_roll_kp * roll + leg_roll_kd * roll_dot
+                    self.torque_leg[:, 0] = self.torque_leg[:, 0] - roll_torque
+                    self.torque_leg[:, 1] = self.torque_leg[:, 1] + roll_torque
+                self.torque_leg = torch.clip(
+                    self.torque_leg, -leg_limit, leg_limit
+                )
+                self.force_leg = (
+                    self.l0_kp * (l0_ref - self.L0) - self.l0_kd * self.L0_dot
+                )
+                if getattr(self, "_lqr_height_force_enabled", False):
+                    h_force_add = getattr(self, "_lqr_height_force_add", None)
+                    if h_force_add is not None:
+                        self.force_leg = self.force_leg + h_force_add.unsqueeze(1)
+                T1, T2 = self.VMC(
+                    self.force_leg + self.cfg.control.feedforward_force, self.torque_leg
+                )
+                torques = torch.cat(
+                    (
+                        T1[:, 0].unsqueeze(1),
+                        T2[:, 0].unsqueeze(1),
+                        self.torque_wheel[:, 0].unsqueeze(1),
+                        -T1[:, 1].unsqueeze(1),
+                        -T2[:, 1].unsqueeze(1),
+                        self.torque_wheel[:, 1].unsqueeze(1),
+                    ),
+                    axis=1,
+                )
+                return torch.clip(
+                    torques * self.torques_scale, -self.torque_limits, self.torque_limits
+                )
+            if lqr_state_model == "sim_wheel4":
+                x_lqr = torch.stack(
+                    (
+                        self._lqr_x_err_integral,
+                        self.base_lin_vel[:, 0] - self.commands[:, 0],
+                        pitch,
+                        pitch_dot,
+                    ),
+                    dim=-1,
+                )
+                wheel_u = -torch.matmul(x_lqr, self._lqr_K.T).squeeze(-1)
+                wheel_scale = float(getattr(lqr_cfg, "sim_wheel_torque_scale", 1.0))
+                wheel_limit = float(getattr(lqr_cfg, "sim_wheel_torque_limit", 1e6))
+                self.torque_wheel = torch.clip(
+                    wheel_scale * wheel_u.unsqueeze(1).repeat(1, 2),
+                    -wheel_limit,
+                    wheel_limit,
+                )
+                self.torque_leg = (
+                    self.theta_kp * (theta0_ref - self.theta0)
+                    - self.theta_kd * self.theta0_dot
+                )
+                leg_pitch_kp = float(getattr(lqr_cfg, "sim_leg_pitch_kp", 0.0))
+                leg_pitch_kd = float(getattr(lqr_cfg, "sim_leg_pitch_kd", 0.0))
+                if leg_pitch_kp != 0.0 or leg_pitch_kd != 0.0:
+                    self.torque_leg = self.torque_leg + (
+                        leg_pitch_kp * pitch + leg_pitch_kd * pitch_dot
+                    ).unsqueeze(1)
+                leg_limit = float(getattr(lqr_cfg, "sim_leg_torque_limit", 1e6))
+                self.torque_leg = torch.clip(self.torque_leg, -leg_limit, leg_limit)
+                self.force_leg = (
+                    self.l0_kp * (l0_ref - self.L0) - self.l0_kd * self.L0_dot
+                )
+                if getattr(self, "_lqr_height_force_enabled", False):
+                    h_force_add = getattr(self, "_lqr_height_force_add", None)
+                    if h_force_add is not None:
+                        self.force_leg = self.force_leg + h_force_add.unsqueeze(1)
+                T1, T2 = self.VMC(
+                    self.force_leg + self.cfg.control.feedforward_force, self.torque_leg
+                )
+                torques = torch.cat(
+                    (
+                        T1[:, 0].unsqueeze(1),
+                        T2[:, 0].unsqueeze(1),
+                        self.torque_wheel[:, 0].unsqueeze(1),
+                        -T1[:, 1].unsqueeze(1),
+                        -T2[:, 1].unsqueeze(1),
+                        self.torque_wheel[:, 1].unsqueeze(1),
+                    ),
+                    axis=1,
+                )
+                return torch.clip(
+                    torques * self.torques_scale, -self.torque_limits, self.torque_limits
+                )
+            if lqr_state_model == "paper_ip6":
                 pitch_dot = self.base_ang_vel[:, 1]
                 vx_ref_gain = float(getattr(lqr_cfg, "paper_velocity_ref_gain", 0.5))
                 vx_err = self.base_lin_vel[:, 0] - vx_ref_gain * self.commands[:, 0]

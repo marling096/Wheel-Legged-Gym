@@ -57,6 +57,17 @@ def env_int(name, default):
     return int(os.environ.get(name, default))
 
 
+def env_str(name, default):
+    return os.environ.get(name, default)
+
+
+def env_bool(name, default):
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    return value.lower() in ("1", "true", "yes", "on")
+
+
 # RL play 模式（非 --lqr_demo）每步写入的默认高度指令
 PLAY_DEFAULT_HEIGHT_CMD = 0.18
 # lqr_demo 目标：headless 下零速度、对齐 RL play 在 height=0.18 附近的站立几何。
@@ -67,6 +78,7 @@ LQR_DEMO_L0_STAND_REF = env_float("LQR_DEMO_L0_STAND_REF", 0.22)
 LQR_DEMO_THETA_REF = env_float("LQR_DEMO_THETA_REF", -0.07)
 LQR_DEMO_FEEDFORWARD_FORCE = env_float("LQR_DEMO_FEEDFORWARD_FORCE", 40.0)
 LQR_DEMO_MAX_STEPS = env_int("LQR_DEMO_MAX_STEPS", 0)
+LQR_DEMO_STATE_MODEL = env_str("LQR_DEMO_STATE_MODEL", "sjtu10")
 
 
 def nominal_virtual_leg_from_cfg(env_cfg):
@@ -250,7 +262,7 @@ def play(args):
         # make_env 内 update_cfg_from_args 会用 args.control_path 覆盖 cfg，此处同步 args
         args.control_path = "vmc_lqr"
         if hasattr(env_cfg.control, "lqr"):
-            env_cfg.control.lqr.state_model = "paper_ip6"
+            env_cfg.control.lqr.state_model = LQR_DEMO_STATE_MODEL
             lqr_cfg = env_cfg.control.lqr
             lqr_cfg.paper_theta_sign = env_float(
                 "LQR_PAPER_THETA_SIGN", lqr_cfg.paper_theta_sign
@@ -285,6 +297,141 @@ def play(args):
             lqr_cfg.paper_leg_pd_blend = env_float(
                 "LQR_PAPER_LEG_PD_BLEND", lqr_cfg.paper_leg_pd_blend
             )
+            lqr_cfg.q_sim_x = env_float("LQR_SIM_Q_X", lqr_cfg.q_sim_x)
+            lqr_cfg.q_sim_x_dot = env_float("LQR_SIM_Q_X_DOT", lqr_cfg.q_sim_x_dot)
+            lqr_cfg.q_sim_pitch = env_float("LQR_SIM_Q_PITCH", lqr_cfg.q_sim_pitch)
+            lqr_cfg.q_sim_pitch_dot = env_float(
+                "LQR_SIM_Q_PITCH_DOT", lqr_cfg.q_sim_pitch_dot
+            )
+            lqr_cfg.r_sim_wheel_torque = env_float(
+                "LQR_SIM_R_WHEEL", lqr_cfg.r_sim_wheel_torque
+            )
+            lqr_cfg.sim_wheel_torque_scale = env_float(
+                "LQR_SIM_WHEEL_SCALE", lqr_cfg.sim_wheel_torque_scale
+            )
+            lqr_cfg.sim_wheel_torque_limit = env_float(
+                "LQR_SIM_WHEEL_LIMIT", lqr_cfg.sim_wheel_torque_limit
+            )
+            lqr_cfg.sim_wheel_force_scale = env_float(
+                "LQR_SIM_FORCE_SCALE", lqr_cfg.sim_wheel_force_scale
+            )
+            lqr_cfg.sim_wheel_l_com_m = env_float(
+                "LQR_SIM_L_COM", lqr_cfg.sim_wheel_l_com_m
+            )
+            lqr_cfg.sim_leg_pitch_kp = env_float(
+                "LQR_SIM_LEG_PITCH_KP", lqr_cfg.sim_leg_pitch_kp
+            )
+            lqr_cfg.sim_leg_pitch_kd = env_float(
+                "LQR_SIM_LEG_PITCH_KD", lqr_cfg.sim_leg_pitch_kd
+            )
+            lqr_cfg.sim_leg_torque_limit = env_float(
+                "LQR_SIM_LEG_LIMIT", lqr_cfg.sim_leg_torque_limit
+            )
+            lqr_cfg.sjtu_leg_length_m = env_float(
+                "LQR_SJTU_LEG_LENGTH", lqr_cfg.sjtu_leg_length_m
+            )
+            lqr_cfg.sjtu_leg_angle_rad = env_float(
+                "LQR_SJTU_LEG_ANGLE", lqr_cfg.sjtu_leg_angle_rad
+            )
+            lqr_cfg.sjtu_wheel_torque_scale = env_float(
+                "LQR_SJTU_WHEEL_SCALE", lqr_cfg.sjtu_wheel_torque_scale
+            )
+            lqr_cfg.sjtu_leg_torque_scale = env_float(
+                "LQR_SJTU_LEG_SCALE", lqr_cfg.sjtu_leg_torque_scale
+            )
+            lqr_cfg.sjtu_wheel_left_scale = env_float(
+                "LQR_SJTU_WHEEL_L_SCALE", lqr_cfg.sjtu_wheel_left_scale
+            )
+            lqr_cfg.sjtu_wheel_right_scale = env_float(
+                "LQR_SJTU_WHEEL_R_SCALE", lqr_cfg.sjtu_wheel_right_scale
+            )
+            lqr_cfg.sjtu_leg_left_scale = env_float(
+                "LQR_SJTU_LEG_L_SCALE", lqr_cfg.sjtu_leg_left_scale
+            )
+            lqr_cfg.sjtu_leg_right_scale = env_float(
+                "LQR_SJTU_LEG_R_SCALE", lqr_cfg.sjtu_leg_right_scale
+            )
+            lqr_cfg.sjtu_leg_map_ll = env_float(
+                "LQR_SJTU_LEG_MAP_LL", lqr_cfg.sjtu_leg_map_ll
+            )
+            lqr_cfg.sjtu_leg_map_lr = env_float(
+                "LQR_SJTU_LEG_MAP_LR", lqr_cfg.sjtu_leg_map_lr
+            )
+            lqr_cfg.sjtu_leg_map_rl = env_float(
+                "LQR_SJTU_LEG_MAP_RL", lqr_cfg.sjtu_leg_map_rl
+            )
+            lqr_cfg.sjtu_leg_map_rr = env_float(
+                "LQR_SJTU_LEG_MAP_RR", lqr_cfg.sjtu_leg_map_rr
+            )
+            lqr_cfg.sjtu_wheel_torque_limit = env_float(
+                "LQR_SJTU_WHEEL_LIMIT", lqr_cfg.sjtu_wheel_torque_limit
+            )
+            lqr_cfg.sjtu_leg_torque_limit = env_float(
+                "LQR_SJTU_LEG_LIMIT", lqr_cfg.sjtu_leg_torque_limit
+            )
+            lqr_cfg.sjtu_leg_pd_blend = env_float(
+                "LQR_SJTU_LEG_PD_BLEND", lqr_cfg.sjtu_leg_pd_blend
+            )
+            lqr_cfg.sjtu_leg_pd_kp = env_float(
+                "LQR_SJTU_LEG_PD_KP", lqr_cfg.sjtu_leg_pd_kp
+            )
+            lqr_cfg.sjtu_leg_pd_kd = env_float(
+                "LQR_SJTU_LEG_PD_KD", lqr_cfg.sjtu_leg_pd_kd
+            )
+            lqr_cfg.sjtu_wheel_pitch_kp = env_float(
+                "LQR_SJTU_WHEEL_PITCH_KP", lqr_cfg.sjtu_wheel_pitch_kp
+            )
+            lqr_cfg.sjtu_wheel_pitch_kd = env_float(
+                "LQR_SJTU_WHEEL_PITCH_KD", lqr_cfg.sjtu_wheel_pitch_kd
+            )
+            lqr_cfg.sjtu_leg_roll_kp = env_float(
+                "LQR_SJTU_LEG_ROLL_KP", lqr_cfg.sjtu_leg_roll_kp
+            )
+            lqr_cfg.sjtu_leg_roll_kd = env_float(
+                "LQR_SJTU_LEG_ROLL_KD", lqr_cfg.sjtu_leg_roll_kd
+            )
+            lqr_cfg.sjtu_balance_wheel_only = env_bool(
+                "LQR_SJTU_BALANCE_WHEEL_ONLY", lqr_cfg.sjtu_balance_wheel_only
+            )
+            lqr_cfg.sjtu_pitch_sign = env_float(
+                "LQR_SJTU_PITCH_SIGN", lqr_cfg.sjtu_pitch_sign
+            )
+            lqr_cfg.sjtu_theta_sign = env_float(
+                "LQR_SJTU_THETA_SIGN", lqr_cfg.sjtu_theta_sign
+            )
+            lqr_cfg.sjtu_yaw_sign = env_float(
+                "LQR_SJTU_YAW_SIGN", lqr_cfg.sjtu_yaw_sign
+            )
+            lqr_cfg.q_sjtu_s = env_float("LQR_SJTU_Q_S", lqr_cfg.q_sjtu_s)
+            lqr_cfg.q_sjtu_ds = env_float("LQR_SJTU_Q_DS", lqr_cfg.q_sjtu_ds)
+            lqr_cfg.q_sjtu_phi = env_float("LQR_SJTU_Q_PHI", lqr_cfg.q_sjtu_phi)
+            lqr_cfg.q_sjtu_dphi = env_float("LQR_SJTU_Q_DPHI", lqr_cfg.q_sjtu_dphi)
+            lqr_cfg.q_sjtu_theta_l = env_float(
+                "LQR_SJTU_Q_THETA_L", lqr_cfg.q_sjtu_theta_l
+            )
+            lqr_cfg.q_sjtu_dtheta_l = env_float(
+                "LQR_SJTU_Q_DTHETA_L", lqr_cfg.q_sjtu_dtheta_l
+            )
+            lqr_cfg.q_sjtu_theta_r = env_float(
+                "LQR_SJTU_Q_THETA_R", lqr_cfg.q_sjtu_theta_r
+            )
+            lqr_cfg.q_sjtu_dtheta_r = env_float(
+                "LQR_SJTU_Q_DTHETA_R", lqr_cfg.q_sjtu_dtheta_r
+            )
+            lqr_cfg.q_sjtu_theta_b = env_float(
+                "LQR_SJTU_Q_THETA_B", lqr_cfg.q_sjtu_theta_b
+            )
+            lqr_cfg.q_sjtu_dtheta_b = env_float(
+                "LQR_SJTU_Q_DTHETA_B", lqr_cfg.q_sjtu_dtheta_b
+            )
+            lqr_cfg.r_sjtu_wheel_l = env_float(
+                "LQR_SJTU_R_WHEEL_L", lqr_cfg.r_sjtu_wheel_l
+            )
+            lqr_cfg.r_sjtu_wheel_r = env_float(
+                "LQR_SJTU_R_WHEEL_R", lqr_cfg.r_sjtu_wheel_r
+            )
+            lqr_cfg.r_sjtu_leg_l = env_float("LQR_SJTU_R_LEG_L", lqr_cfg.r_sjtu_leg_l)
+            lqr_cfg.r_sjtu_leg_r = env_float("LQR_SJTU_R_LEG_R", lqr_cfg.r_sjtu_leg_r)
     if USE_KEYBOARD_TELEOP:
         # Avoid LeggedRobot._post_physics_step_callback periodically overwriting commands.
         env_cfg.commands.resampling_time = 1e9
@@ -299,6 +446,14 @@ def play(args):
         env_cfg.commands.ranges.height = [LQR_DEMO_HEIGHT_CMD, LQR_DEMO_HEIGHT_CMD]
         env_cfg.commands.ranges.heading = [0.0, 0.0]
         env_cfg.control.feedforward_force = LQR_DEMO_FEEDFORWARD_FORCE
+        env_cfg.control.kp_l0 = env_float("LQR_DEMO_L0_KP", env_cfg.control.kp_l0)
+        env_cfg.control.kd_l0 = env_float("LQR_DEMO_L0_KD", env_cfg.control.kd_l0)
+        env_cfg.control.kp_theta = env_float(
+            "LQR_DEMO_THETA_KP", env_cfg.control.kp_theta
+        )
+        env_cfg.control.kd_theta = env_float(
+            "LQR_DEMO_THETA_KD", env_cfg.control.kd_theta
+        )
         lf0, lf1 = virtual_leg_ik_from_cfg(
             env_cfg, LQR_DEMO_L0_STAND_REF, LQR_DEMO_THETA_REF
         )
@@ -333,6 +488,9 @@ def play(args):
     env_cfg.domain_rand.randomize_action_delay = False
     if lqr_demo:
         env_cfg.commands.resampling_time = 1e9
+        env_cfg.terrain.static_friction = env_float("LQR_DEMO_STATIC_FRICTION", 1.5)
+        env_cfg.terrain.dynamic_friction = env_float("LQR_DEMO_DYNAMIC_FRICTION", 1.5)
+        env_cfg.terrain.restitution = env_float("LQR_DEMO_RESTITUTION", 0.0)
 
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
@@ -361,7 +519,7 @@ def play(args):
             )
         print(
             "[play] LQR 演示：单环境、不加载 RL 策略；"
-            "按论文 6 状态 LQR 输出车轮力矩 T 与虚拟腿力矩 Tp。"
+            f"state_model={env.cfg.control.lqr.state_model}。"
         )
         print(
             f"[play] LQR 演示目标高度: {LQR_DEMO_HEIGHT_CMD} m；"
@@ -439,6 +597,22 @@ def play(args):
         theta_trim_i = torch.zeros(env.num_envs, device=env.device, dtype=torch.float)
         theta_trim_ki = 0.015
         theta_trim_limit = 0.35
+        # Pitch outer loop for sjtu10: trim the virtual-leg angle reference so
+        # the body pitch, not the fixed leg geometry, defines the equilibrium.
+        enable_pitch_theta_trim = env_bool(
+            "LQR_DEMO_PITCH_THETA_TRIM",
+            getattr(env.cfg.control.lqr, "state_model", "") == "sjtu10",
+        )
+        pitch_theta_i = torch.zeros(env.num_envs, device=env.device, dtype=torch.float)
+        pitch_theta_base = torch.full(
+            (env.num_envs,), float(theta_nominal), device=env.device, dtype=torch.float
+        )
+        pitch_theta_kp = env_float("LQR_DEMO_PITCH_THETA_KP", 0.10)
+        pitch_theta_ki = env_float("LQR_DEMO_PITCH_THETA_KI", 0.015)
+        pitch_theta_kd = env_float("LQR_DEMO_PITCH_THETA_KD", 0.015)
+        pitch_theta_limit = env_float("LQR_DEMO_PITCH_THETA_LIMIT", 0.18)
+        pitch_theta_i_limit = env_float("LQR_DEMO_PITCH_THETA_I_LIMIT", 0.6)
+        pitch_theta_start_step = env_int("LQR_DEMO_PITCH_THETA_START", 100)
     else:
         train_cfg.runner.resume = True
         ppo_runner, train_cfg = task_registry.make_alg_runner(
@@ -509,6 +683,26 @@ def play(args):
             env.commands[:, 0] = vel_cmd + vel_err_intergral
 
         obs, _, rews, dones, infos, obs_history = env.step(actions)
+        if lqr_demo and enable_pitch_theta_trim:
+            pitch_all = torch.atan2(env.projected_gravity[:, 0], -env.projected_gravity[:, 2])
+            pitch_dot_all = env.base_ang_vel[:, 1]
+            pitch_err = -pitch_all
+            if i >= pitch_theta_start_step:
+                pitch_theta_i += pitch_err * env.dt
+                pitch_theta_i = torch.clip(
+                    pitch_theta_i, -pitch_theta_i_limit, pitch_theta_i_limit
+                )
+            theta_ref_cmd = (
+                pitch_theta_base
+                + pitch_theta_kp * pitch_err
+                + pitch_theta_ki * pitch_theta_i
+                - pitch_theta_kd * pitch_dot_all
+            )
+            theta_ref_cmd = torch.clip(
+                theta_ref_cmd, -pitch_theta_limit, pitch_theta_limit
+            )
+            actions_zero[:, 0] = theta_ref_cmd / env.cfg.control.action_scale_theta
+            actions_zero[:, 3] = theta_ref_cmd / env.cfg.control.action_scale_theta
         if lqr_demo and enable_theta_auto_trim and hasattr(env, "theta0"):
             # Auto-trim theta reference to reduce static bias between linear model
             # equilibrium and the actual simulator equilibrium.
@@ -564,13 +758,37 @@ def play(args):
                 env.projected_gravity[robot_index, 0],
                 -env.projected_gravity[robot_index, 2],
             ).item()
+            roll = torch.atan2(
+                env.projected_gravity[robot_index, 1],
+                -env.projected_gravity[robot_index, 2],
+            ).item()
             wheel_t = (
                 env.torque_wheel[robot_index].mean().item()
                 if hasattr(env, "torque_wheel")
                 else float("nan")
             )
+            wheel_l = (
+                env.torque_wheel[robot_index, 0].item()
+                if hasattr(env, "torque_wheel")
+                else float("nan")
+            )
+            wheel_r = (
+                env.torque_wheel[robot_index, 1].item()
+                if hasattr(env, "torque_wheel")
+                else float("nan")
+            )
             leg_t = (
                 env.torque_leg[robot_index].mean().item()
+                if hasattr(env, "torque_leg")
+                else float("nan")
+            )
+            leg_l = (
+                env.torque_leg[robot_index, 0].item()
+                if hasattr(env, "torque_leg")
+                else float("nan")
+            )
+            leg_r = (
+                env.torque_leg[robot_index, 1].item()
                 if hasattr(env, "torque_leg")
                 else float("nan")
             )
@@ -591,11 +809,14 @@ def play(args):
             )
             print(
                 f"[lqr_demo] step={i:05d} base_h={base_h:.3f} cmd_h={cmd_h:.3f} "
+                f"vx={env.base_lin_vel[robot_index, 0].item():.3f} "
                 f"L0={l0_l:.3f} l0_act={actions_zero[robot_index, 1].item():.3f} "
                 f"ff={env.cfg.control.feedforward_force:.1f} "
                 f"hF={env._lqr_height_force_add[robot_index].item():.1f} "
                 f"theta={theta_meas:.3f} theta_ref={theta_ref:.3f} "
-                f"pitch={pitch:.3f} Tw={wheel_t:.2f} Tp={leg_t:.2f} F={leg_f:.1f} "
+                f"pitch={pitch:.3f} roll={roll:.3f} Tw={wheel_t:.2f} "
+                f"TwLR=({wheel_l:.2f},{wheel_r:.2f}) Tp={leg_t:.2f} "
+                f"TpLR=({leg_l:.2f},{leg_r:.2f}) F={leg_f:.1f} "
                 f"|theta_err|={theta_err:.3f} |L0_err|={l0_err:.3f}"
             )
         elif (not lqr_demo) and i % 200 == 0:

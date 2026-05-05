@@ -61,9 +61,10 @@ class WheelLeggedVMCCfg(WheelLeggedCfg):
         control_path = "vmc_pd"
 
         class lqr:
+            # sjtu10: X=[s,ds,phi,dphi,theta_ll,dtheta_ll,theta_lr,dtheta_lr,theta_b,dtheta_b]ᵀ
             # paper_ip6: X=[θ, θ̇, xb, ẋb, φ, φ̇]ᵀ, U=[wheel T, leg Tp]ᵀ（论文路径）
             # paper6: X = [x, ẋ, θ, θ̇, l, ẋ_l]ᵀ；legacy4: X = [Δθ, θ̇, ΔL, Ḻ]ᵀ
-            state_model = "legacy4"
+            state_model = "sjtu10"
             # upright-first tuning for paper6:
             # 1) weaken x/xdot coupling to avoid longitudinal error injecting large Fr
             # 2) emphasize theta/theta_dot stabilization
@@ -100,6 +101,63 @@ class WheelLeggedVMCCfg(WheelLeggedCfg):
             paper_leg_pd_kp = 90.0
             paper_leg_pd_kd = 5.0
             x_integral_limit = 2.0
+
+            # Current-sim wheel inverted-pendulum model:
+            # X=[x_i, vx, pitch, pitch_dot], U=[single-side wheel torque].
+            q_sim_x = 0.2
+            q_sim_x_dot = 1.0
+            q_sim_pitch = 1200.0
+            q_sim_pitch_dot = 50.0
+            r_sim_wheel_torque = 1.0
+            sim_wheel_torque_scale = 1.0
+            sim_wheel_torque_limit = 5.0
+            sim_wheel_force_scale = 1.0
+            sim_wheel_l_com_m = 0.0
+            sim_wheel_I_pitch_floor = 0.08
+            sim_leg_pitch_kp = 0.0
+            sim_leg_pitch_kd = 0.0
+            sim_leg_torque_limit = 60.0
+
+            # SJTU open-source 10-state model defaults, matching the MATLAB script.
+            sjtu_leg_length_m = 0.22
+            sjtu_leg_angle_rad = -0.07
+            q_sjtu_s = 1.0
+            q_sjtu_ds = 2.0
+            q_sjtu_phi = 12000.0
+            q_sjtu_dphi = 200.0
+            q_sjtu_theta_l = 1000.0
+            q_sjtu_dtheta_l = 1.0
+            q_sjtu_theta_r = 1000.0
+            q_sjtu_dtheta_r = 1.0
+            q_sjtu_theta_b = 20000.0
+            q_sjtu_dtheta_b = 1.0
+            r_sjtu_wheel_l = 0.25
+            r_sjtu_wheel_r = 0.25
+            r_sjtu_leg_l = 1.5
+            r_sjtu_leg_r = 1.5
+            sjtu_wheel_torque_scale = 1.0
+            sjtu_leg_torque_scale = 1.0
+            sjtu_wheel_left_scale = 1.0
+            sjtu_wheel_right_scale = 1.0
+            sjtu_leg_left_scale = 1.0
+            sjtu_leg_right_scale = 1.0
+            sjtu_leg_map_ll = 1.0
+            sjtu_leg_map_lr = 0.0
+            sjtu_leg_map_rl = 0.0
+            sjtu_leg_map_rr = 1.0
+            sjtu_wheel_torque_limit = 5.0
+            sjtu_leg_torque_limit = 60.0
+            sjtu_leg_pd_blend = 0.0
+            sjtu_leg_pd_kp = 90.0
+            sjtu_leg_pd_kd = 5.0
+            sjtu_wheel_pitch_kp = 0.0
+            sjtu_wheel_pitch_kd = 0.0
+            sjtu_leg_roll_kp = 0.0
+            sjtu_leg_roll_kd = 0.0
+            sjtu_balance_wheel_only = False
+            sjtu_pitch_sign = 1.0
+            sjtu_theta_sign = 1.0
+            sjtu_yaw_sign = 1.0
 
             # LQR plant linearization (see wl_virtual_lqr.py; Chen et al. 2023 IP + decoupled length).
             balance_linearization = "paper"  # "paper" | "legacy"

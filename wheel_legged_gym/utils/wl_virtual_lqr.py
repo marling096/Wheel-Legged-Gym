@@ -28,12 +28,20 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 
 from wheel_legged_gym import WHEEL_LEGGED_GYM_ROOT_DIR
+from wheel_legged_gym.utils.wl_sjtu_lqr import (
+    INPUT_ORDER as SJTU_INPUT_ORDER,
+    STATE_ORDER as SJTU_STATE_ORDER,
+    build_sjtu_state_space,
+    params_from_urdf,
+)
 from wheel_legged_gym.utils.wl_urdf_params import parse_wheellegged_urdf_inertial
 
 
 STATE_DIM_PAPER6 = 6
 STATE_DIM_LEGACY4 = 4
 STATE_DIM_PAPER_IP6 = 6
+STATE_DIM_SIM_WHEEL4 = 4
+STATE_DIM_SJTU10 = 10
 
 STATE_SPACE_DESCRIPTION_PAPER_IP6 = """
 ━━━━━━━━ vmc_lqr 论文轮腿倒立摆状态空间（state_model=paper_ip6）━━━━━━━━
@@ -91,6 +99,38 @@ STATE_SPACE_DESCRIPTION_PAPER6 = """
 STATE_SPACE_DESCRIPTION_LEGACY4 = """
 ━━━━━━━━ vmc_lqr state_model=legacy4（旧四维虚拟腿对象）━━━━━━━━
     X = [ Δθ , θ̇ , ΔL , Ḻ ]ᵀ ,   U = [ τ_v , F_r ]ᵀ
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+STATE_SPACE_DESCRIPTION_SIM_WHEEL4 = """
+━━━━━━━━ vmc_lqr 当前仿真轮式倒立摆（state_model=sim_wheel4）━━━━━━━━
+状态向量 X ∈ R^4::
+
+    X = [ x_i , v_x , pitch , pitch_dot ]ᵀ
+
+控制输入 U ∈ R^1::
+
+    U = [ wheel_torque ]ᵀ
+
+说明::
+    A/B 根据当前 wl.urdf 的质量、轮半径和站姿 L0 估算，输入是单侧车轮平均力矩。
+    腿长与虚拟腿姿态仍由 VMC/PD 管理，该模型只闭合轮式平衡通道。
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+STATE_SPACE_DESCRIPTION_SJTU10 = """
+━━━━━━━━ vmc_lqr SJTU 开源轮腿 LQR（state_model=sjtu10）━━━━━━━━
+状态向量 X ∈ R^10::
+
+    X = [s, ds, phi, dphi, theta_ll, dtheta_ll, theta_lr, dtheta_lr, theta_b, dtheta_b]ᵀ
+
+控制输入 U ∈ R^4::
+
+    U = [T_wl, T_wr, T_bl, T_br]ᵀ
+
+说明::
+    A/B 由 HerKules_VOCAL_SJ_LQR_v4_with_data.m 的 5 个动力学方程移植而来；
+    物理参数从当前 wl.urdf 和 VMC 腿长工作点估算。
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -214,6 +254,67 @@ def _build_published_paper_ip6_AB() -> Tuple[np.ndarray, np.ndarray, Dict]:
     return A, B, meta
 
 
+def _build_sim_wheel4_AB(
+    *,
+    M_cart: float,
+    m_body: float,
+    l_com: float,
+    I_pitch: float,
+    wheel_radius: float,
+    gravity: float,
+    torque_to_force_scale: float,
+) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    """当前仿真坐标的车轮倒立摆线性化。
+
+    X=[x_i, v_x, pitch, pitch_dot]^T, U=[single-side wheel torque]^T.
+    正号约定后续仍可通过 ``sim_wheel_torque_scale`` 在仿真中校正。
+    """
+    M_cart = max(float(M_cart), 1e-3)
+    m_body = max(float(m_body), 1e-3)
+    l_com = max(float(l_com), 1e-3)
+    I_pitch = max(float(I_pitch), 1e-4)
+    wheel_radius = max(float(wheel_radius), 1e-4)
+
+    # Cart-pole linearization around pitch=0:
+    # [M+m, m*l] [xdd]   [F]
+    # [m*l, I  ] [pdd] = [m*g*l*pitch]
+    mass_matrix = np.array(
+        [[M_cart + m_body, m_body * l_com], [m_body * l_com, I_pitch]],
+        dtype=np.float64,
+    )
+    rhs_g = np.array([0.0, m_body * gravity * l_com], dtype=np.float64)
+    rhs_force = np.array([1.0, 0.0], dtype=np.float64)
+    inv_g = np.linalg.solve(mass_matrix, rhs_g)
+    inv_force = np.linalg.solve(mass_matrix, rhs_force)
+    force_per_torque = 2.0 * float(torque_to_force_scale) / wheel_radius
+
+    A = np.zeros((4, 4), dtype=np.float64)
+    B = np.zeros((4, 1), dtype=np.float64)
+    A[0, 1] = 1.0
+    A[1, 2] = float(inv_g[0])
+    B[1, 0] = float(inv_force[0] * force_per_torque)
+    A[2, 3] = 1.0
+    A[3, 2] = float(inv_g[1])
+    B[3, 0] = float(inv_force[1] * force_per_torque)
+    meta = {
+        "state_model": "sim_wheel4",
+        "source": "URDF current-coordinate cart-pole approximation",
+        "state_order": "[x_i, vx, pitch, pitch_dot]",
+        "input_order": "[single-side wheel torque]",
+        "M_cart [kg]": round(M_cart, 6),
+        "m_body [kg]": round(m_body, 6),
+        "l_com [m]": round(l_com, 6),
+        "I_pitch [kg*m^2]": round(I_pitch, 6),
+        "wheel_radius [m]": round(wheel_radius, 6),
+        "force_per_torque [N/Nm]": round(force_per_torque, 6),
+        "ddot_x_from_pitch": round(float(inv_g[0]), 8),
+        "ddot_pitch_from_pitch": round(float(inv_g[1]), 8),
+        "ddot_x_from_torque": round(float(B[1, 0]), 8),
+        "ddot_pitch_from_torque": round(float(B[3, 0]), 8),
+    }
+    return A, B, meta
+
+
 def _print_lqr_paper6(A, B, Q, R, K, diagnostics: Optional[Dict]) -> None:
     with np.printoptions(precision=8, suppress=True, linewidth=120):
         print(STATE_SPACE_DESCRIPTION_PAPER6.rstrip())
@@ -276,6 +377,44 @@ def _print_lqr_legacy4(
         print("[vmc_lqr] Q (4x4):\n", Q)
         print("[vmc_lqr] R (2x2):\n", R)
         print("[vmc_lqr] K (2x4), U = -K @ X:\n", K)
+        print("========================================================================\n")
+
+
+def _print_lqr_sim_wheel4(A, B, Q, R, K, diagnostics: Optional[Dict]) -> None:
+    with np.printoptions(precision=8, suppress=True, linewidth=120):
+        print(STATE_SPACE_DESCRIPTION_SIM_WHEEL4.rstrip())
+        print("\n========== vmc_lqr: LQR (sim_wheel4, continuous-time) ==========")
+        if diagnostics:
+            print("[vmc_lqr] Lumped parameters:")
+            for k, v in diagnostics.items():
+                print(f"          {k}: {v}")
+            print("")
+        print("[vmc_lqr] Ẋ = A X + B U")
+        print("[vmc_lqr] A (4x4):\n", A)
+        print("[vmc_lqr] B (4x1):\n", B)
+        print("[vmc_lqr] Q (4x4):\n", Q)
+        print("[vmc_lqr] R (1x1):\n", R)
+        print("[vmc_lqr] K (1x4), U = -K @ X:\n", K)
+        print("========================================================================\n")
+
+
+def _print_lqr_sjtu10(A, B, Q, R, K, diagnostics: Optional[Dict]) -> None:
+    with np.printoptions(precision=8, suppress=True, linewidth=160):
+        print(STATE_SPACE_DESCRIPTION_SJTU10.rstrip())
+        print("\n========== vmc_lqr: LQR (sjtu10, continuous-time) ==========")
+        print(f"[vmc_lqr] State order: {SJTU_STATE_ORDER}")
+        print(f"[vmc_lqr] Input order: {SJTU_INPUT_ORDER}")
+        if diagnostics:
+            print("[vmc_lqr] Lumped parameters:")
+            for k, v in diagnostics.items():
+                print(f"          {k}: {v}")
+            print("")
+        print("[vmc_lqr] Ẋ = A X + B U")
+        print("[vmc_lqr] A (10x10):\n", A)
+        print("[vmc_lqr] B (10x4):\n", B)
+        print("[vmc_lqr] Q (10x10):\n", Q)
+        print("[vmc_lqr] R (4x4):\n", R)
+        print("[vmc_lqr] K (4x10), U = -K @ X:\n", K)
         print("========================================================================\n")
 
 
@@ -421,6 +560,44 @@ def build_virtual_leg_decoupled_state_matrices(
         float(getattr(lqr, "radial_mass_min_kg", 0.5)),
     )
 
+    if state_model == "sim_wheel4":
+        l_com_cfg = float(getattr(lqr, "sim_wheel_l_com_m", 0.0))
+        if l_com_cfg > 1e-6:
+            l_com = l_com_cfg
+        else:
+            l_com = L0_nom + (base_com_z if base_com_z is not None else 0.12)
+        I_pitch = float(I_yy) + m_body * l_com * l_com
+        I_pitch = max(I_pitch, float(getattr(lqr, "sim_wheel_I_pitch_floor", 0.08)))
+        A, B, meta = _build_sim_wheel4_AB(
+            M_cart=M_cart,
+            m_body=m_body,
+            l_com=l_com,
+            I_pitch=I_pitch,
+            wheel_radius=float(r_w),
+            gravity=gravity,
+            torque_to_force_scale=float(getattr(lqr, "sim_wheel_force_scale", 1.0)),
+        )
+        return A, B, meta
+
+    if state_model == "sjtu10":
+        leg_length = float(getattr(lqr, "sjtu_leg_length_m", 0.0))
+        if leg_length <= 1e-6:
+            leg_length = L0_nom
+        leg_angle = float(getattr(lqr, "sjtu_leg_angle_rad", -0.07))
+        sjtu_params = params_from_urdf(
+            urdf_path,
+            leg_length=leg_length,
+            leg_angle=leg_angle,
+            gravity=gravity,
+        )
+        A, B = build_sjtu_state_space(sjtu_params)
+        meta = {
+            "state_model": "sjtu10",
+            "source": "Port of HerKules_VOCAL_SJ_LQR_v4_with_data.m",
+            **{k: round(float(v), 8) for k, v in sjtu_params.__dict__.items()},
+        }
+        return A, B, meta
+
     if state_model == "legacy4":
         alpha_theta, bal_diag = _alpha_theta_balance_linearization(
             bal_mode,
@@ -503,6 +680,14 @@ def build_virtual_leg_decoupled_state_matrices(
     return A, B, meta
 
 
+def _positive_lqr_weight(value: float, floor: float = 1e-8) -> float:
+    """Keep a state/input nearly disabled without making CARE singular."""
+    value = float(value)
+    if value < 0.0:
+        raise ValueError(f"LQR weights must be non-negative, got {value}")
+    return max(value, floor)
+
+
 def build_virtual_leg_lqr_gain(cfg, gravity: float = 9.81) -> np.ndarray:
     """Return ``K`` for ``U = -K X``（paper6 时为 ``(2,6)``，legacy4 为 ``(2,4)``）。"""
     try:
@@ -515,7 +700,42 @@ def build_virtual_leg_lqr_gain(cfg, gravity: float = 9.81) -> np.ndarray:
     A, B, meta = build_virtual_leg_decoupled_state_matrices(cfg, gravity=gravity)
     lqr = cfg.control.lqr
 
-    if meta.get("state_model") == "paper_ip6":
+    if meta.get("state_model") == "sjtu10":
+        Q = np.diag(
+            [
+                _positive_lqr_weight(getattr(lqr, "q_sjtu_s", 1.0)),
+                _positive_lqr_weight(getattr(lqr, "q_sjtu_ds", 2.0)),
+                _positive_lqr_weight(getattr(lqr, "q_sjtu_phi", 12000.0)),
+                _positive_lqr_weight(getattr(lqr, "q_sjtu_dphi", 200.0)),
+                _positive_lqr_weight(getattr(lqr, "q_sjtu_theta_l", 1000.0)),
+                _positive_lqr_weight(getattr(lqr, "q_sjtu_dtheta_l", 1.0)),
+                _positive_lqr_weight(getattr(lqr, "q_sjtu_theta_r", 1000.0)),
+                _positive_lqr_weight(getattr(lqr, "q_sjtu_dtheta_r", 1.0)),
+                _positive_lqr_weight(getattr(lqr, "q_sjtu_theta_b", 20000.0)),
+                _positive_lqr_weight(getattr(lqr, "q_sjtu_dtheta_b", 1.0)),
+            ]
+        )
+        R = np.diag(
+            [
+                _positive_lqr_weight(getattr(lqr, "r_sjtu_wheel_l", 0.25), 1e-6),
+                _positive_lqr_weight(getattr(lqr, "r_sjtu_wheel_r", 0.25), 1e-6),
+                _positive_lqr_weight(getattr(lqr, "r_sjtu_leg_l", 1.5), 1e-6),
+                _positive_lqr_weight(getattr(lqr, "r_sjtu_leg_r", 1.5), 1e-6),
+            ]
+        )
+        diag_print = dict(meta)
+    elif meta.get("state_model") == "sim_wheel4":
+        Q = np.diag(
+            [
+                float(getattr(lqr, "q_sim_x", 0.2)),
+                float(getattr(lqr, "q_sim_x_dot", 1.0)),
+                float(getattr(lqr, "q_sim_pitch", 1200.0)),
+                float(getattr(lqr, "q_sim_pitch_dot", 50.0)),
+            ]
+        )
+        R = np.diag([float(getattr(lqr, "r_sim_wheel_torque", 1.0))])
+        diag_print = dict(meta)
+    elif meta.get("state_model") == "paper_ip6":
         Q = np.diag(
             [
                 float(getattr(lqr, "q_paper_theta", 1.0)),
@@ -565,13 +785,30 @@ def build_virtual_leg_lqr_gain(cfg, gravity: float = 9.81) -> np.ndarray:
         A_B = B_B = A_L = B_L = None
         diag_print = dict(meta)
 
-    if meta.get("state_model") != "paper_ip6":
+    if meta.get("state_model") not in ("paper_ip6", "sim_wheel4", "sjtu10"):
         R = np.diag([float(lqr.r_torque), float(lqr.r_force)])
 
-    P = solve_continuous_are(A, B, Q, R)
+    try:
+        P = solve_continuous_are(A, B, Q, R)
+    except np.linalg.LinAlgError:
+        if meta.get("state_model") != "sjtu10":
+            raise
+        # Some SciPy versions are sensitive to exactly-zero/near-singular SJTU
+        # weights. Retry with tiny positive state costs and disabled balancing.
+        Q_retry = np.diag(np.maximum(np.diag(Q), 1e-6))
+        R_retry = np.diag(np.maximum(np.diag(R), 1e-6))
+        P = solve_continuous_are(A, B, Q_retry, R_retry, balanced=False)
+        Q = Q_retry
+        R = R_retry
+        diag_print = dict(diag_print)
+        diag_print["care_retry"] = "used Q/R floor=1e-6, balanced=False"
     K = np.linalg.solve(R, B.T @ P)
 
-    if meta.get("state_model") == "paper_ip6":
+    if meta.get("state_model") == "sjtu10":
+        _print_lqr_sjtu10(A, B, Q, R, K, diagnostics=diag_print)
+    elif meta.get("state_model") == "sim_wheel4":
+        _print_lqr_sim_wheel4(A, B, Q, R, K, diagnostics=diag_print)
+    elif meta.get("state_model") == "paper_ip6":
         _print_lqr_paper_ip6(A, B, Q, R, K, diagnostics=diag_print)
     elif meta.get("state_model") == "legacy4":
         _print_lqr_legacy4(A_B, B_B, A_L, B_L, A, B, Q, R, K, diagnostics=diag_print)
