@@ -60,6 +60,12 @@ class WheelLeggedVMCCfg(WheelLeggedCfg):
         # 默认虚拟腿 PD + VMC（RL）。命令行 ``--control_path`` 默认为 vmc_pd，传入时会覆盖 cfg。
         control_path = "vmc_pd"
 
+        # 在 VMC 力矩映射前叠加到虚拟腿摆矩 τ_leg（默认 0，不影响其它机器人）。
+        vmc_leg_pitch_stab_kp = 0.0
+        vmc_leg_pitch_stab_kd = 0.0
+        vmc_leg_roll_stab_kp = 0.0
+        vmc_leg_roll_stab_kd = 0.0
+
         class lqr:
             # sjtu10: X=[s,ds,phi,dphi,theta_ll,dtheta_ll,theta_lr,dtheta_lr,theta_b,dtheta_b]ᵀ
             # paper_ip6: X=[θ, θ̇, xb, ẋb, φ, φ̇]ᵀ, U=[wheel T, leg Tp]ᵀ（论文路径）

@@ -47,4 +47,4 @@ class WheelLeggedVMCFlatCfgPPO(WheelLeggedVMCCfgPPO):
     class runner(WheelLeggedVMCCfgPPO.runner):
         # logging
         experiment_name = "wheel_legged_vmc_flat"
-        max_iterations = 500
+        max_iterations = 100

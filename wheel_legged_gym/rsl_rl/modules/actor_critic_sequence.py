@@ -140,11 +140,12 @@ class ActorCriticSequence(nn.Module):
         print(f"Actor MLP: {self.actor}")
         print(f"Critic MLP: {self.critic}")
 
-        # Action noise
-        self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
+        # Policy exploration std via log_std so optimizer cannot drive σ to NaN / ≤0.
+        init = max(float(init_noise_std), 1e-6)
+        self.log_std = nn.Parameter(
+            torch.full((num_actions,), torch.log(torch.tensor(init)).item())
+        )
         self.distribution = None
-        # disable args validation for speedup
-        Normal.set_default_validate_args = False
 
         # seems that we get better performance without init
         # self.init_memory_weights(self.memory_a, 0.001, 0.)
@@ -162,6 +163,21 @@ class ActorCriticSequence(nn.Module):
 
     def reset(self, dones=None):
         pass
+
+    def load_state_dict(self, state_dict, strict=True):
+        data = dict(state_dict)
+        if "std" in data and "log_std" not in data:
+            s = data.pop("std")
+            if not torch.is_tensor(s):
+                s = torch.tensor(s, dtype=torch.float32)
+            s = torch.nan_to_num(s, nan=1.0, posinf=1.0, neginf=1e-6)
+            s = torch.clamp(s, min=1e-6)
+            data["log_std"] = torch.log(s)
+        return super().load_state_dict(data, strict=strict)
+
+    def exploration_std(self):
+        ls = torch.nan_to_num(self.log_std, nan=0.0, posinf=5.0, neginf=-20.0)
+        return torch.exp(torch.clamp(ls, -20.0, 5.0))
 
     def forward(self):
         raise NotImplementedError
@@ -181,7 +197,9 @@ class ActorCriticSequence(nn.Module):
     def update_distribution(self, observations, observation_history):
         self.latent = self.encoder(observation_history)
         mean = self.actor(torch.cat((observations, self.latent.detach()), dim=-1))
-        self.distribution = Normal(mean, mean*0. + self.std)
+        mean = torch.nan_to_num(mean, nan=0.0, posinf=0.0, neginf=0.0)
+        scale = mean * 0.0 + self.exploration_std()
+        self.distribution = Normal(mean, scale, validate_args=False)
 
     def act(self, observations, observation_history, **kwargs):
         self.update_distribution(observations, observation_history)
@@ -195,7 +213,10 @@ class ActorCriticSequence(nn.Module):
 
     def act_inference(self, observations, observation_history):
         self.latent = self.encoder(observation_history)
-        actions_mean = self.actor(torch.cat((observations, self.latent), dim=-1))
+        x = torch.cat((observations, self.latent), dim=-1)
+        x = torch.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
+        actions_mean = self.actor(x)
+        actions_mean = torch.nan_to_num(actions_mean, nan=0.0, posinf=1.0, neginf=-1.0)
         return actions_mean, self.latent
 
     def evaluate(self, critic_observations, **kwargs):

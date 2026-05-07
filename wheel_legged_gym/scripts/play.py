@@ -469,6 +469,20 @@ def play(args):
     env_cfg.env.episode_length_s = 20
     env_cfg.env.fail_to_terminal_time_s = 3
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 4)  # reduced for inference to save GPU memory
+    if args.task == "wheel_legged_swpu2026":
+        # 课程地形 + 极大 clip_actions 易在首帧把力矩打爆 -> root/dof NaN，窗口里看不到机器人
+        env_cfg.env.num_envs = 1
+        env_cfg.terrain.curriculum = False
+        env_cfg.terrain.max_init_terrain_level = 0
+        env_cfg.normalization.clip_actions = 5.0
+        env_cfg.sim.physx.num_velocity_iterations = 1
+        # 略抬高基座，减轻单侧轮悬空时的首帧穿模/爆炸
+        if len(env_cfg.init_state.pos) >= 3:
+            env_cfg.init_state.pos[2] = max(float(env_cfg.init_state.pos[2]), 0.42)
+        print(
+            "[play] wheel_legged_swpu2026: num_envs=1, 地形课程关闭, clip_actions=5, "
+            "PhysX velocity iterations=1, init base z≥0.42（提高接触稳定性）。"
+        )
     if lqr_demo:
         env_cfg.env.num_envs = 1
         env_cfg.commands.ranges.lin_vel_x = [LQR_DEMO_VEL_CMD, LQR_DEMO_VEL_CMD]
@@ -762,10 +776,18 @@ def play(args):
                 break
             if lqr_demo:
                 actions = actions_zero
-            elif ppo_runner.alg.actor_critic.is_sequence:
-                actions, latent = policy(obs, obs_history)
             else:
-                actions = policy(obs.detach())
+                obs = torch.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
+                obs_history = torch.nan_to_num(
+                    obs_history, nan=0.0, posinf=1.0, neginf=-1.0
+                )
+                if ppo_runner.alg.actor_critic.is_sequence:
+                    actions, latent = policy(obs, obs_history)
+                else:
+                    actions = policy(obs.detach())
+                actions = torch.nan_to_num(
+                    actions, nan=0.0, posinf=1.0, neginf=-1.0
+                )
 
             if USE_KEYBOARD_TELEOP and getattr(env, "_keyboard_teleop_state", None) is not None:
                 apply_keyboard_commands(env)
@@ -784,17 +806,18 @@ def play(args):
                 env.commands[:, 3] = 0
 
             if CoM_offset_compensate:
-                if i > 200 and i < 600:
-                    vel_cmd[:] = 2.5 * np.clip((i - 200) * 0.05, 0, 1)
-                else:
-                    vel_cmd[:] = 0
-                vel_err_intergral += (
-                    (vel_cmd - env.base_lin_vel[:, 0])
-                    * env.dt
-                    * ((vel_cmd - env.base_lin_vel[:, 0]).abs() < 0.5)
-                )
-                vel_err_intergral = torch.clip(vel_err_intergral, -0.5, 0.5)
-                env.commands[:, 0] = vel_cmd + vel_err_intergral
+                if torch.isfinite(env.base_lin_vel).all():
+                    if i > 200 and i < 600:
+                        vel_cmd[:] = 2.5 * np.clip((i - 200) * 0.05, 0, 1)
+                    else:
+                        vel_cmd[:] = 0
+                    vel_err_intergral += (
+                        (vel_cmd - env.base_lin_vel[:, 0])
+                        * env.dt
+                        * ((vel_cmd - env.base_lin_vel[:, 0]).abs() < 0.5)
+                    )
+                    vel_err_intergral = torch.clip(vel_err_intergral, -0.5, 0.5)
+                    env.commands[:, 0] = vel_cmd + vel_err_intergral
 
             obs, _, rews, dones, infos, obs_history = env.step(actions)
             if lqr_demo and enable_pitch_theta_trim:

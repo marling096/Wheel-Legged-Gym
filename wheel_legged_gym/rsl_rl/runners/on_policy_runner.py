@@ -225,7 +225,7 @@ class OnPolicyRunner:
                 value = torch.mean(infotensor)
                 self.writer.add_scalar("Episode/" + key, value, locs["it"])
                 ep_string += f"""{f'Mean {key}:':>{pad}} {value:.4f}\n"""
-        mean_std = self.alg.actor_critic.std.mean()
+        mean_std = self.alg.actor_critic.exploration_std().mean()
         fps = int(
             self.num_steps_per_env
             * self.env.num_envs

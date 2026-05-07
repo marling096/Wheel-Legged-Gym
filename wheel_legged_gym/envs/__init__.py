@@ -40,6 +40,11 @@ from .wheel_legged_vmc_flat.wheel_legged_vmc_flat_config import (
     WheelLeggedVMCFlatCfg,
     WheelLeggedVMCFlatCfgPPO,
 )
+from .wheel_legged_swpu2026.wheel_legged_swpu2026 import LeggedRobotVMCSwpu2026
+from .wheel_legged_swpu2026.wheel_legged_swpu2026_config import (
+    WheelLeggedSwpu2026Cfg,
+    WheelLeggedSwpu2026CfgPPO,
+)
 
 
 import os
@@ -57,4 +62,10 @@ task_registry.register(
     LeggedRobotVMC,
     WheelLeggedVMCFlatCfg(),
     WheelLeggedVMCFlatCfgPPO(),
+)
+task_registry.register(
+    "wheel_legged_swpu2026",
+    LeggedRobotVMCSwpu2026,
+    WheelLeggedSwpu2026Cfg(),
+    WheelLeggedSwpu2026CfgPPO(),
 )

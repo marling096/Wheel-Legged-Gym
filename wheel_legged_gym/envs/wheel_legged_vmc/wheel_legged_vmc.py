@@ -207,6 +207,8 @@ class LeggedRobotVMC(LeggedRobot):
         )
 
         self.L0, self.theta0 = self.forward_kinematics(self.theta1, self.theta2)
+        self.L0 = torch.nan_to_num(self.L0, nan=0.2, posinf=2.0, neginf=0.05)
+        self.theta0 = torch.nan_to_num(self.theta0, nan=0.0, posinf=3.14, neginf=-3.14)
 
         dt = 0.001
         L0_temp, theta0_temp = self.forward_kinematics(
@@ -214,6 +216,10 @@ class LeggedRobotVMC(LeggedRobot):
         )
         self.L0_dot = (L0_temp - self.L0) / dt
         self.theta0_dot = (theta0_temp - self.theta0) / dt
+        self.L0_dot = torch.nan_to_num(self.L0_dot, nan=0.0, posinf=1e3, neginf=-1e3)
+        self.theta0_dot = torch.nan_to_num(
+            self.theta0_dot, nan=0.0, posinf=1e3, neginf=-1e3
+        )
 
     def forward_kinematics(self, theta1, theta2):
         end_x = (
@@ -224,7 +230,7 @@ class LeggedRobotVMC(LeggedRobot):
         end_y = self.cfg.asset.l1 * torch.sin(theta1) + self.cfg.asset.l2 * torch.sin(
             theta1 + theta2
         )
-        L0 = torch.sqrt(end_x**2 + end_y**2)
+        L0 = torch.sqrt(torch.clamp(end_x**2 + end_y**2, min=0.0))
         theta0 = torch.arctan2(end_y, end_x) - self.pi / 2
         return L0, theta0
 
@@ -749,6 +755,7 @@ class LeggedRobotVMC(LeggedRobot):
                 - self.theta_kd * self.theta0_dot
             )
             self.force_leg = self.l0_kp * (l0_ref - self.L0) - self.l0_kd * self.L0_dot
+        self._apply_vmc_virtual_leg_orientation_stabilization()
         self.torque_wheel = self.d_gains[:, [2, 5]] * (
             wheel_vel_ref - self.dof_vel[:, [2, 5]]
         )
@@ -772,7 +779,28 @@ class LeggedRobotVMC(LeggedRobot):
             torques * self.torques_scale, -self.torque_limits, self.torque_limits
         )
 
+    def _apply_vmc_virtual_leg_orientation_stabilization(self):
+        """用机体 projected gravity / 角速度对虚拟腿 τ 做俯仰、横滚辅助（cfg 全为 0 则无效）。"""
+        ctrl = self.cfg.control
+        kpp = float(getattr(ctrl, "vmc_leg_pitch_stab_kp", 0.0))
+        kdp = float(getattr(ctrl, "vmc_leg_pitch_stab_kd", 0.0))
+        kpr = float(getattr(ctrl, "vmc_leg_roll_stab_kp", 0.0))
+        kdr = float(getattr(ctrl, "vmc_leg_roll_stab_kd", 0.0))
+        if kpp == 0.0 and kdp == 0.0 and kpr == 0.0 and kdr == 0.0:
+            return
+        pg = self.projected_gravity
+        pitch = torch.atan2(pg[:, 0], -pg[:, 2])
+        pitch_dot = self.base_ang_vel[:, 1]
+        roll = torch.atan2(pg[:, 1], -pg[:, 2])
+        roll_dot = self.base_ang_vel[:, 0]
+        p = kpp * pitch + kdp * pitch_dot
+        r = kpr * roll + kdr * roll_dot
+        self.torque_leg[:, 0] = self.torque_leg[:, 0] + p - r
+        self.torque_leg[:, 1] = self.torque_leg[:, 1] + p + r
+
     def VMC(self, F, T):
+        # Avoid div by near-zero virtual leg length (numerical blow-up -> inf torques -> NaN obs/policy).
+        L0 = torch.clamp(self.L0, min=0.02)
         theta0 = self.theta0 + self.pi / 2
         t11 = self.cfg.asset.l1 * torch.sin(
             theta0 - self.theta1
@@ -781,12 +809,12 @@ class LeggedRobotVMC(LeggedRobot):
         t12 = self.cfg.asset.l1 * torch.cos(
             theta0 - self.theta1
         ) - self.cfg.asset.l2 * torch.cos(self.theta1 + self.theta2 - theta0)
-        t12 = t12 / self.L0
+        t12 = t12 / L0
 
         t21 = -self.cfg.asset.l2 * torch.sin(self.theta1 + self.theta2 - theta0)
 
         t22 = -self.cfg.asset.l2 * torch.cos(self.theta1 + self.theta2 - theta0)
-        t22 = t22 / self.L0
+        t22 = t22 / L0
 
         T1 = t11 * F - t12 * T
         T2 = t21 * F - t22 * T

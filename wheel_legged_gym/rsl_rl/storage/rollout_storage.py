@@ -160,6 +160,9 @@ class RolloutStorage:
         self.step = 0
 
     def compute_returns(self, last_values, gamma, lam):
+        self.rewards = torch.nan_to_num(self.rewards, nan=0.0, posinf=1e4, neginf=-1e4)
+        self.values = torch.nan_to_num(self.values, nan=0.0, posinf=1e4, neginf=-1e4)
+        last_values = torch.nan_to_num(last_values, nan=0.0, posinf=1e4, neginf=-1e4)
         advantage = 0
         for step in reversed(range(self.num_transitions_per_env)):
             if step == self.num_transitions_per_env - 1:
@@ -176,10 +179,18 @@ class RolloutStorage:
             self.returns[step] = advantage + self.values[step]
 
         # Compute and normalize the advantages
-        self.advantages = self.returns - self.values
-        self.advantages = (self.advantages - self.advantages.mean()) / (
-            self.advantages.std() + 1e-8
+        self.returns = torch.nan_to_num(
+            self.returns, nan=0.0, posinf=1e4, neginf=-1e4
         )
+        self.advantages = self.returns - self.values
+        adv_std = self.advantages.std()
+        if torch.isfinite(adv_std) and adv_std > 1e-8:
+            self.advantages = (self.advantages - self.advantages.mean()) / (
+                adv_std + 1e-8
+            )
+        else:
+            self.advantages.zero_()
+        self.advantages = torch.nan_to_num(self.advantages, nan=0.0, posinf=10.0, neginf=-10.0)
 
     def get_statistics(self):
         done = self.dones

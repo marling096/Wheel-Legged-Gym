@@ -48,7 +48,7 @@ class PPO:
             [
                 {"params": self.actor_critic.actor.parameters()},
                 {"params": self.actor_critic.critic.parameters()},
-                {"params": self.actor_critic.std},
+                {"params": self.actor_critic.log_std},
             ],
             lr=learning_rate,
         )
@@ -193,6 +193,14 @@ class PPO:
 
             # KL
             with torch.inference_mode():
+                sigma_batch = torch.nan_to_num(
+                    sigma_batch, nan=1e-6, posinf=1.0, neginf=1e-6
+                )
+                old_sigma_batch = torch.nan_to_num(
+                    old_sigma_batch, nan=1e-6, posinf=1.0, neginf=1e-6
+                )
+                sigma_batch = torch.clamp(sigma_batch, min=1e-6)
+                old_sigma_batch = torch.clamp(old_sigma_batch, min=1e-6)
                 kl = torch.sum(
                     torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
                     + (
@@ -203,7 +211,7 @@ class PPO:
                     - 0.5,
                     axis=-1,
                 )
-                kl_mean = torch.mean(kl)
+                kl_mean = torch.nan_to_num(torch.mean(kl), nan=0.0)
 
                 if self.desired_kl is not None and self.schedule == "adaptive":
                     if kl_mean > self.desired_kl * 2.0:
@@ -215,16 +223,32 @@ class PPO:
                         param_group["lr"] = self.learning_rate
 
             # Surrogate loss
-            ratio = torch.exp(
-                actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch)
+            advantages_batch = torch.nan_to_num(
+                advantages_batch, nan=0.0, posinf=10.0, neginf=-10.0
             )
+            advantages_batch = torch.clamp(advantages_batch, -10.0, 10.0)
+            log_ratio = actions_log_prob_batch - torch.squeeze(
+                old_actions_log_prob_batch
+            )
+            log_ratio = torch.clamp(log_ratio, -20.0, 20.0)
+            ratio = torch.exp(log_ratio)
             surrogate = -torch.squeeze(advantages_batch) * ratio
             surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(
                 ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
             )
             surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
+            surrogate_loss = torch.nan_to_num(surrogate_loss, nan=0.0)
 
             # Value function loss
+            returns_batch = torch.nan_to_num(
+                returns_batch, nan=0.0, posinf=1e4, neginf=-1e4
+            )
+            target_values_batch = torch.nan_to_num(
+                target_values_batch, nan=0.0, posinf=1e4, neginf=-1e4
+            )
+            value_batch = torch.nan_to_num(value_batch, nan=0.0, posinf=1e4, neginf=-1e4)
+            value_batch = torch.clamp(value_batch, -5e2, 5e2)
+            returns_batch = torch.clamp(returns_batch, -1e3, 1e3)
             if self.use_clipped_value_loss:
                 value_clipped = target_values_batch + (
                     value_batch - target_values_batch
@@ -234,12 +258,16 @@ class PPO:
                 value_loss = torch.max(value_losses, value_losses_clipped).mean()
             else:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
+            value_loss = torch.nan_to_num(value_loss, nan=0.0, posinf=1e6, neginf=1e6)
+            value_loss = torch.clamp(value_loss, max=5e3)
 
+            ent_mean = torch.nan_to_num(entropy_batch.mean(), nan=0.0)
             loss = (
                 surrogate_loss
                 + self.value_loss_coef * value_loss
-                - self.entropy_coef * entropy_batch.mean()
+                - self.entropy_coef * ent_mean
             )
+            loss = torch.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=1e6)
 
             # Gradient step
             self.optimizer.zero_grad()
