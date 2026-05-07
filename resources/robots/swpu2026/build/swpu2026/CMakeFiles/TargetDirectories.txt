@@ -1,0 +1,9 @@
+/home/karl/swpu2026/build/swpu2026/CMakeFiles/uninstall.dir
+/home/karl/swpu2026/build/swpu2026/CMakeFiles/swpu2026_uninstall.dir
+/home/karl/swpu2026/build/swpu2026/CMakeFiles/test.dir
+/home/karl/swpu2026/build/swpu2026/CMakeFiles/edit_cache.dir
+/home/karl/swpu2026/build/swpu2026/CMakeFiles/rebuild_cache.dir
+/home/karl/swpu2026/build/swpu2026/CMakeFiles/list_install_components.dir
+/home/karl/swpu2026/build/swpu2026/CMakeFiles/install.dir
+/home/karl/swpu2026/build/swpu2026/CMakeFiles/install/local.dir
+/home/karl/swpu2026/build/swpu2026/CMakeFiles/install/strip.dir

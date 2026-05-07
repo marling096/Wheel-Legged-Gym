@@ -1,0 +1,70 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-da9463b8736ce89cb6f9.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1
+					]
+				}
+			],
+			"name" : "",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "swpu2026_center_feed_description",
+					"targetIndexes" : 
+					[
+						0,
+						1
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "swpu2026_center_feed_description_uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-swpu2026_center_feed_description_uninstall-d212c885b8b928246859.json",
+					"name" : "swpu2026_center_feed_description_uninstall",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-uninstall-87edb7cfd39232577843.json",
+					"name" : "uninstall",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/karl/swpu2026\u4e32\u6b65-\u4e2d\u5fc3\u4f9b\u5f39\u7248/build/swpu2026_center_feed_description",
+		"source" : "/home/karl/swpu2026\u4e32\u6b65-\u4e2d\u5fc3\u4f9b\u5f39\u7248"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 3
+	}
+}

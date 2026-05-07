@@ -1,0 +1,4 @@
+source;share/swpu2026/local_setup.bash
+source;share/swpu2026/local_setup.dsv
+source;share/swpu2026/local_setup.sh
+source;share/swpu2026/local_setup.zsh
