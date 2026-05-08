@@ -29,6 +29,10 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
 import os
+import numpy as np
+
+if not hasattr(np, "float"):
+    np.float = float
 
 WHEEL_LEGGED_GYM_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 WHEEL_LEGGED_GYM_ENVS_DIR = os.path.join(

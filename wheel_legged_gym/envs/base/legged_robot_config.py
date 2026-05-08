@@ -125,9 +125,11 @@ class LeggedRobotCfg(BaseConfig):
         file = ""
         name = "legged_robot"  # actor name
         foot_name = "None"  # name of the feet bodies, used to index body state and contact force tensors
+        forward_vec = [1.0, 0.0, 0.0]  # base-frame forward axis used by heading and x velocity tracking
         offset = 0
         l1 = 0
         l2 = 0
+        dof_velocity_limits = {}
         penalize_contacts_on = []
         terminate_after_contacts_on = []
         disable_gravity = False

@@ -34,8 +34,8 @@ from warnings import WarningMessage
 import numpy as np
 import os
 
-from isaacgym.torch_utils import *
 from isaacgym import gymtorch, gymapi, gymutil
+from isaacgym.torch_utils import *
 
 import torch
 from torch import Tensor
@@ -90,6 +90,11 @@ class LeggedRobotVMC(LeggedRobot):
         """
         clip_actions = self.cfg.normalization.clip_actions
         self.actions = torch.clip(actions, -clip_actions, clip_actions).to(self.device)
+        action_limits = getattr(self.cfg.control, "action_limits", None)
+        if action_limits is not None:
+            low = to_torch(action_limits[0], device=self.device).unsqueeze(0)
+            high = to_torch(action_limits[1], device=self.device).unsqueeze(0)
+            self.actions = torch.maximum(torch.minimum(self.actions, high), low)
         # step physics and render each frame
         self.render()
         self.pre_physics_step()
@@ -175,21 +180,33 @@ class LeggedRobotVMC(LeggedRobot):
 
     def leg_post_physics_step(self):
         self.theta1 = torch.cat(
-            (self.dof_pos[:, 0].unsqueeze(1), -self.dof_pos[:, 3].unsqueeze(1)), dim=1
-        )
-        self.theta2 = torch.cat(
             (
-                (self.dof_pos[:, 1] + self.pi / 2).unsqueeze(1),
-                (-self.dof_pos[:, 4] + self.pi / 2).unsqueeze(1),
+                self.dof_pos[:, self.hip_dof_indices[0]].unsqueeze(1),
+                self.dof_pos[:, self.hip_dof_indices[1]].unsqueeze(1),
             ),
             dim=1,
-        )
+        ) * self.hip_angle_signs + self.hip_angle_offsets
+        self.theta2 = torch.cat(
+            (
+                self.dof_pos[:, self.knee_dof_indices[0]].unsqueeze(1),
+                self.dof_pos[:, self.knee_dof_indices[1]].unsqueeze(1),
+            ),
+            dim=1,
+        ) * self.knee_angle_signs + self.knee_angle_offsets
         theta1_dot = torch.cat(
-            (self.dof_vel[:, 0].unsqueeze(1), -self.dof_vel[:, 3].unsqueeze(1)), dim=1
-        )
+            (
+                self.dof_vel[:, self.hip_dof_indices[0]].unsqueeze(1),
+                self.dof_vel[:, self.hip_dof_indices[1]].unsqueeze(1),
+            ),
+            dim=1,
+        ) * self.hip_angle_signs
         theta2_dot = torch.cat(
-            (self.dof_vel[:, 1].unsqueeze(1), -self.dof_vel[:, 4].unsqueeze(1)), dim=1
-        )
+            (
+                self.dof_vel[:, self.knee_dof_indices[0]].unsqueeze(1),
+                self.dof_vel[:, self.knee_dof_indices[1]].unsqueeze(1),
+            ),
+            dim=1,
+        ) * self.knee_angle_signs
 
         self.L0, self.theta0 = self.forward_kinematics(self.theta1, self.theta2)
 
@@ -368,6 +385,12 @@ class LeggedRobotVMC(LeggedRobot):
         Returns:
             [torch.Tensor]: Torques sent to the simulation
         """
+        action_limits = getattr(self.cfg.control, "action_limits", None)
+        if action_limits is not None:
+            low = to_torch(action_limits[0], device=self.device).unsqueeze(0)
+            high = to_torch(action_limits[1], device=self.device).unsqueeze(0)
+            actions = torch.maximum(torch.minimum(actions, high), low)
+
         theta0_ref = (
             torch.cat(
                 (
@@ -397,8 +420,25 @@ class LeggedRobotVMC(LeggedRobot):
                 axis=1,
             )
             * self.cfg.control.action_scale_vel
+            * self.wheel_vel_signs
         )
-
+        command_wheel_vel_gain = getattr(
+            self.cfg.control, "command_wheel_vel_gain", 0.0
+        )
+        if command_wheel_vel_gain != 0.0:
+            wheel_radius = getattr(self.cfg.asset, "wheel_radius", None)
+            if wheel_radius is None or wheel_radius <= 0.0:
+                raise ValueError(
+                    "cfg.asset.wheel_radius must be set when "
+                    "cfg.control.command_wheel_vel_gain is non-zero."
+                )
+            command_wheel_vel_ref = (
+                self.commands[:, 0].unsqueeze(1)
+                / wheel_radius
+                * self.wheel_vel_signs.unsqueeze(0)
+                * command_wheel_vel_gain
+            )
+            wheel_vel_ref = wheel_vel_ref + command_wheel_vel_ref
         if getattr(self.cfg.control, "control_path", "vmc_pd") == "vmc_lqr":
             x_l = torch.stack(
                 (
@@ -431,8 +471,8 @@ class LeggedRobotVMC(LeggedRobot):
                 - self.theta_kd * self.theta0_dot
             )
             self.force_leg = self.l0_kp * (l0_ref - self.L0) - self.l0_kd * self.L0_dot
-        self.torque_wheel = self.d_gains[:, [2, 5]] * (
-            wheel_vel_ref - self.dof_vel[:, [2, 5]]
+        self.torque_wheel = self.d_gains[:, self.wheel_dof_indices] * (
+            wheel_vel_ref - self.dof_vel[:, self.wheel_dof_indices]
         )
         T1, T2 = self.VMC(
             self.force_leg + self.cfg.control.feedforward_force, self.torque_leg
@@ -440,11 +480,11 @@ class LeggedRobotVMC(LeggedRobot):
 
         torques = torch.cat(
             (
-                T1[:, 0].unsqueeze(1),
-                T2[:, 0].unsqueeze(1),
+                (T1[:, 0] * self.hip_torque_signs[0]).unsqueeze(1),
+                (T2[:, 0] * self.knee_torque_signs[0]).unsqueeze(1),
                 self.torque_wheel[:, 0].unsqueeze(1),
-                -T1[:, 1].unsqueeze(1),
-                -T2[:, 1].unsqueeze(1),
+                (T1[:, 1] * self.hip_torque_signs[1]).unsqueeze(1),
+                (T2[:, 1] * self.knee_torque_signs[1]).unsqueeze(1),
                 self.torque_wheel[:, 1].unsqueeze(1),
             ),
             axis=1,
@@ -475,6 +515,35 @@ class LeggedRobotVMC(LeggedRobot):
 
         return T1, T2
 
+    def _reward_vmc_leg_action(self):
+        return torch.sum(torch.square(self.actions[:, [0, 1, 3, 4]]), dim=1)
+
+    def _reward_vmc_leg_motion(self):
+        return torch.sum(torch.square(self.theta0_dot), dim=1) + torch.sum(
+            torch.square(self.L0_dot), dim=1
+        )
+
+    def _reward_vmc_leg_symmetry(self):
+        l0_diff = self.L0[:, 0] - self.L0[:, 1]
+        theta_diff = self.theta0[:, 0] - self.theta0[:, 1]
+        return torch.square(l0_diff) + torch.square(theta_diff)
+
+    def _reward_vmc_nominal_leg(self):
+        theta_error = torch.sum(torch.square(self.theta0), dim=1)
+        l0_error = torch.sum(
+            torch.square(self.L0 - self.cfg.control.l0_offset), dim=1
+        )
+        return theta_error + l0_error
+
+    def _reward_tracking_wheel_vel(self):
+        wheel_radius = getattr(self.cfg.asset, "wheel_radius", 1.0)
+        signed_wheel_vel = (
+            self.dof_vel[:, self.wheel_dof_indices] * self.wheel_vel_signs
+        )
+        wheel_lin_vel = torch.mean(signed_wheel_vel, dim=1) * wheel_radius
+        wheel_vel_error = torch.square(self.commands[:, 0] - wheel_lin_vel)
+        return torch.exp(-wheel_vel_error / self.cfg.rewards.tracking_sigma)
+
     def _get_noise_scale_vec(self, cfg):
         """Sets a vector used to scale the noise added to the observations.
             [NOTE]: Must be adapted when changing the observations structure
@@ -504,14 +573,14 @@ class LeggedRobotVMC(LeggedRobot):
         # noise_vec[20 + 3 : 26 + 3] = 0.0  # previous actions
         noise_vec[:3] = noise_scales.ang_vel * noise_level * self.obs_scales.ang_vel
         noise_vec[3:6] = noise_scales.gravity * noise_level
-        noise_vec[6:8] = 0.0  # commands
-        noise_vec[8:10] = noise_scales.dof_pos * noise_level * self.obs_scales.dof_pos
-        noise_vec[10:12] = noise_scales.dof_vel * noise_level * self.obs_scales.dof_vel
-        noise_vec[12:14] = noise_scales.l0 * noise_level * self.obs_scales.l0
-        noise_vec[14:16] = noise_scales.l0_dot * noise_level * self.obs_scales.l0_dot
-        noise_vec[16:18] = noise_scales.dof_pos * noise_level * self.obs_scales.dof_pos
-        noise_vec[18:20] = noise_scales.dof_vel * noise_level * self.obs_scales.dof_vel
-        noise_vec[20:26] = 0.0  # previous actions
+        noise_vec[6:9] = 0.0  # commands
+        noise_vec[9:11] = noise_scales.dof_pos * noise_level * self.obs_scales.dof_pos
+        noise_vec[11:13] = noise_scales.dof_vel * noise_level * self.obs_scales.dof_vel
+        noise_vec[13:15] = noise_scales.l0 * noise_level * self.obs_scales.l0
+        noise_vec[15:17] = noise_scales.l0_dot * noise_level * self.obs_scales.l0_dot
+        noise_vec[17:19] = noise_scales.dof_pos * noise_level * self.obs_scales.dof_pos
+        noise_vec[19:21] = noise_scales.dof_vel * noise_level * self.obs_scales.dof_vel
+        noise_vec[21:27] = 0.0  # previous actions
         if self.cfg.terrain.measure_heights:
             noise_vec[48:235] = (
                 noise_scales.height_measurements
@@ -550,8 +619,43 @@ class LeggedRobotVMC(LeggedRobot):
         self.gravity_vec = to_torch(
             get_axis_params(-1.0, self.up_axis_idx), device=self.device
         ).repeat((self.num_envs, 1))
-        self.forward_vec = to_torch([1.0, 0.0, 0.0], device=self.device).repeat(
-            (self.num_envs, 1)
+        self.forward_vec = to_torch(
+            self.cfg.asset.forward_vec, device=self.device
+        ).repeat((self.num_envs, 1))
+        self.hip_dof_indices = getattr(self.cfg.asset, "hip_dof_indices", [0, 3])
+        self.knee_dof_indices = getattr(self.cfg.asset, "knee_dof_indices", [1, 4])
+        self.wheel_dof_indices = getattr(self.cfg.asset, "wheel_dof_indices", [2, 5])
+        self.wheel_vel_signs = to_torch(
+            getattr(self.cfg.asset, "wheel_vel_signs", [1.0, 1.0]),
+            device=self.device,
+        )
+        self.hip_angle_signs = to_torch(
+            getattr(self.cfg.asset, "hip_angle_signs", [1.0, -1.0]),
+            device=self.device,
+        )
+        self.knee_angle_signs = to_torch(
+            getattr(self.cfg.asset, "knee_angle_signs", [1.0, -1.0]),
+            device=self.device,
+        )
+        self.hip_angle_offsets = to_torch(
+            getattr(self.cfg.asset, "hip_angle_offsets", [0.0, 0.0]),
+            device=self.device,
+        )
+        self.knee_angle_offsets = to_torch(
+            getattr(
+                self.cfg.asset,
+                "knee_angle_offsets",
+                [float(np.pi / 2), float(np.pi / 2)],
+            ),
+            device=self.device,
+        )
+        self.hip_torque_signs = to_torch(
+            getattr(self.cfg.asset, "hip_torque_signs", [1.0, -1.0]),
+            device=self.device,
+        )
+        self.knee_torque_signs = to_torch(
+            getattr(self.cfg.asset, "knee_torque_signs", [1.0, -1.0]),
+            device=self.device,
         )
         self.torques = torch.zeros(
             self.num_envs,

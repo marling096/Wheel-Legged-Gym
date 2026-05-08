@@ -34,8 +34,8 @@ from warnings import WarningMessage
 import numpy as np
 import os
 
-from isaacgym.torch_utils import *
 from isaacgym import gymtorch, gymapi, gymutil
+from isaacgym.torch_utils import *
 
 import torch
 from torch import Tensor
@@ -440,6 +440,10 @@ class LeggedRobot(BaseTask):
         Returns:
             [List[gymapi.RigidShapeProperties]]: Modified rigid shape properties
         """
+        asset_friction = getattr(self.cfg.asset, "friction", None)
+        if asset_friction is not None:
+            for s in range(len(props)):
+                props[s].friction = asset_friction
         if self.cfg.domain_rand.randomize_friction:
             if env_id == 0:
                 # prepare friction randomization
@@ -488,6 +492,14 @@ class LeggedRobot(BaseTask):
         Returns:
             [numpy.array]: Modified DOF properties
         """
+        velocity_overrides = getattr(self.cfg.asset, "dof_velocity_limits", {})
+        if velocity_overrides:
+            dof_names = getattr(self, "dof_names", [])
+            for i, dof_name in enumerate(dof_names):
+                for key, value in velocity_overrides.items():
+                    if key in dof_name:
+                        props["velocity"][i] = value
+                        break
         if env_id == 0:
             self.dof_pos_limits = torch.zeros(
                 self.num_dof,
@@ -939,9 +951,9 @@ class LeggedRobot(BaseTask):
         self.gravity_vec = to_torch(
             get_axis_params(-1.0, self.up_axis_idx), device=self.device
         ).repeat((self.num_envs, 1))
-        self.forward_vec = to_torch([1.0, 0.0, 0.0], device=self.device).repeat(
-            (self.num_envs, 1)
-        )
+        self.forward_vec = to_torch(
+            self.cfg.asset.forward_vec, device=self.device
+        ).repeat((self.num_envs, 1))
         self.torques = torch.zeros(
             self.num_envs,
             self.num_actions,
@@ -1748,12 +1760,14 @@ class LeggedRobot(BaseTask):
 
     def _reward_tracking_lin_vel(self):
         # Tracking of linear velocity commands (x axes)
-        lin_vel_error = torch.square(self.commands[:, 0] - self.base_lin_vel[:, 0])
+        forward_lin_vel = torch.sum(self.base_lin_vel * self.forward_vec, dim=1)
+        lin_vel_error = torch.square(self.commands[:, 0] - forward_lin_vel)
         return torch.exp(-lin_vel_error / self.cfg.rewards.tracking_sigma)
 
     def _reward_tracking_lin_vel_enhance(self):
         # Tracking of linear velocity commands (x axes)
-        lin_vel_error = torch.square(self.commands[:, 0] - self.base_lin_vel[:, 0])
+        forward_lin_vel = torch.sum(self.base_lin_vel * self.forward_vec, dim=1)
+        lin_vel_error = torch.square(self.commands[:, 0] - forward_lin_vel)
         return torch.exp(-lin_vel_error / self.cfg.rewards.tracking_sigma / 10) - 1
 
     def _reward_tracking_ang_vel(self):

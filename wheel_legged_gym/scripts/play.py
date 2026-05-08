@@ -30,11 +30,14 @@
 
 from wheel_legged_gym import WHEEL_LEGGED_GYM_ROOT_DIR
 import os
+import csv
+from datetime import datetime
 
 import isaacgym
-from isaacgym.torch_utils import *
 from isaacgym import gymapi
+from isaacgym.torch_utils import *
 from wheel_legged_gym.envs import *
+from wheel_legged_gym.utils.math import wrap_to_pi
 from wheel_legged_gym.utils import get_args, export_policy_as_jit, task_registry, Logger
 
 import numpy as np
@@ -56,6 +59,7 @@ def install_keyboard_teleop(env, env_cfg):
 
     vx_min, vx_max = env_cfg.commands.ranges.lin_vel_x
     h_min, h_max = env_cfg.commands.ranges.height
+    height_default = float(getattr(env_cfg.rewards, "base_height_target", h_min))
     # 单次按下直接给定指令幅值（不再逐级换挡）
     vx_forward = float(np.clip(vx_max, vx_min, vx_max))
     vx_reverse = float(np.clip(vx_min, vx_min, vx_max))
@@ -64,7 +68,7 @@ def install_keyboard_teleop(env, env_cfg):
     forward = quat_apply(env.base_quat[0:1], env.forward_vec[0:1])
     state = {
         "vx": float(torch.clip(env.commands[0, 0], vx_min, vx_max).cpu()),
-        "height": float(torch.clip(env.commands[0, 2], h_min, h_max).cpu()),
+        "height": float(np.clip(height_default, h_min, h_max)),
         "heading": float(torch.atan2(forward[:, 1], forward[:, 0]).squeeze().cpu()),
     }
 
@@ -166,6 +170,214 @@ def apply_keyboard_commands(env):
     env.commands[:, 3] = h
 
 
+def get_forward_lin_vel(env):
+    return torch.sum(env.base_lin_vel * env.forward_vec, dim=1)
+
+
+class RuntimeStateLogger:
+    def __init__(self, env, env_cfg, train_cfg, args, robot_index=0):
+        self.env = env
+        self.robot_index = robot_index
+        self.interval = int(getattr(args, "runtime_log_interval", 50) or 0)
+        self.file = None
+        self.writer = None
+
+        if self.interval <= 0:
+            self.path = None
+            return
+
+        default_dir = os.path.join(
+            WHEEL_LEGGED_GYM_ROOT_DIR, "logs", train_cfg.runner.experiment_name
+        )
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_path = os.path.join(
+            default_dir, f"runtime_state_{args.task}_{timestamp}.csv"
+        )
+        self.path = getattr(args, "runtime_log_path", None) or default_path
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+
+        self.fieldnames = [
+            "step",
+            "time_s",
+            "teleop_vx",
+            "command_vx",
+            "command_yaw",
+            "command_height",
+            "base_height",
+            "base_vel_forward",
+            "base_vel_x",
+            "base_vel_y",
+            "base_vel_z",
+            "base_ang_vel_x",
+            "base_ang_vel_y",
+            "base_ang_vel_z",
+            "roll",
+            "pitch",
+            "yaw",
+            "proj_gx",
+            "proj_gy",
+            "proj_gz",
+            "action_l_theta",
+            "action_l_l0",
+            "action_l_wheel",
+            "action_r_theta",
+            "action_r_l0",
+            "action_r_wheel",
+            "wheel_vel_ref_l",
+            "wheel_vel_ref_r",
+            "wheel_lin_vel",
+            "signed_wheel_vel_l",
+            "signed_wheel_vel_r",
+            "theta0_l",
+            "theta0_r",
+            "theta0_dot_l",
+            "theta0_dot_r",
+            "L0_l",
+            "L0_r",
+            "L0_dot_l",
+            "L0_dot_r",
+            "dof_pos_l_hip",
+            "dof_pos_l_knee",
+            "dof_pos_l_wheel",
+            "dof_pos_r_hip",
+            "dof_pos_r_knee",
+            "dof_pos_r_wheel",
+            "dof_vel_l_wheel",
+            "dof_vel_r_wheel",
+            "torque_l_hip",
+            "torque_l_knee",
+            "torque_l_wheel",
+            "torque_r_hip",
+            "torque_r_knee",
+            "torque_r_wheel",
+            "torque_wheel_l_cmd",
+            "torque_wheel_r_cmd",
+            "contact_l_norm",
+            "contact_r_norm",
+            "contact_l_z",
+            "contact_r_z",
+            "reset",
+        ]
+        self.file = open(self.path, "w", newline="")
+        self.writer = csv.DictWriter(self.file, fieldnames=self.fieldnames)
+        self.writer.writeheader()
+        print(f"[runtime_log] writing runtime state CSV: {self.path}")
+
+    def close(self):
+        if self.file is not None:
+            self.file.close()
+            self.file = None
+
+    def maybe_log(self, step, actions):
+        if self.interval <= 0 or step % self.interval != 0:
+            return
+
+        env = self.env
+        idx = self.robot_index
+        teleop_state = getattr(env, "_keyboard_teleop_state", None)
+        roll, pitch, yaw = get_euler_xyz(env.base_quat[idx : idx + 1])
+        contacts = env.contact_forces[idx, env.feet_indices, :]
+        contact_norm = torch.norm(contacts, dim=-1)
+        torque_wheel = getattr(env, "torque_wheel", None)
+        wheel_vel_signs = getattr(env, "wheel_vel_signs", torch.ones(2, device=env.device))
+        applied_actions = getattr(env, "actions", actions)
+        wheel_vel_ref = (
+            applied_actions[idx, [2, 5]]
+            * env.cfg.control.action_scale_vel
+            * wheel_vel_signs
+        )
+        command_wheel_vel_gain = getattr(
+            env.cfg.control, "command_wheel_vel_gain", 0.0
+        )
+        if command_wheel_vel_gain != 0.0:
+            wheel_radius = getattr(env.cfg.asset, "wheel_radius", None)
+            if wheel_radius is not None and wheel_radius > 0.0:
+                wheel_vel_ref = wheel_vel_ref + (
+                    env.commands[idx, 0]
+                    / wheel_radius
+                    * wheel_vel_signs
+                    * command_wheel_vel_gain
+                )
+        signed_wheel_vel = env.dof_vel[idx, env.wheel_dof_indices] * wheel_vel_signs
+        wheel_radius = getattr(env.cfg.asset, "wheel_radius", 1.0)
+        wheel_lin_vel = torch.mean(signed_wheel_vel) * wheel_radius
+        row = {
+            "step": step,
+            "time_s": step * env.dt,
+            "teleop_vx": teleop_state["vx"] if teleop_state is not None else float("nan"),
+            "command_vx": env.commands[idx, 0].item(),
+            "command_yaw": env.commands[idx, 1].item(),
+            "command_height": env.commands[idx, 2].item(),
+            "base_height": env.base_height[idx].item(),
+            "base_vel_forward": get_forward_lin_vel(env)[idx].item(),
+            "base_vel_x": env.base_lin_vel[idx, 0].item(),
+            "base_vel_y": env.base_lin_vel[idx, 1].item(),
+            "base_vel_z": env.base_lin_vel[idx, 2].item(),
+            "base_ang_vel_x": env.base_ang_vel[idx, 0].item(),
+            "base_ang_vel_y": env.base_ang_vel[idx, 1].item(),
+            "base_ang_vel_z": env.base_ang_vel[idx, 2].item(),
+            "roll": wrap_to_pi(roll)[0].item(),
+            "pitch": wrap_to_pi(pitch)[0].item(),
+            "yaw": wrap_to_pi(yaw)[0].item(),
+            "proj_gx": env.projected_gravity[idx, 0].item(),
+            "proj_gy": env.projected_gravity[idx, 1].item(),
+            "proj_gz": env.projected_gravity[idx, 2].item(),
+            "action_l_theta": applied_actions[idx, 0].item(),
+            "action_l_l0": applied_actions[idx, 1].item(),
+            "action_l_wheel": applied_actions[idx, 2].item(),
+            "action_r_theta": applied_actions[idx, 3].item(),
+            "action_r_l0": applied_actions[idx, 4].item(),
+            "action_r_wheel": applied_actions[idx, 5].item(),
+            "wheel_vel_ref_l": wheel_vel_ref[0].item(),
+            "wheel_vel_ref_r": wheel_vel_ref[1].item(),
+            "wheel_lin_vel": wheel_lin_vel.item(),
+            "signed_wheel_vel_l": signed_wheel_vel[0].item(),
+            "signed_wheel_vel_r": signed_wheel_vel[1].item(),
+            "theta0_l": env.theta0[idx, 0].item(),
+            "theta0_r": env.theta0[idx, 1].item(),
+            "theta0_dot_l": env.theta0_dot[idx, 0].item(),
+            "theta0_dot_r": env.theta0_dot[idx, 1].item(),
+            "L0_l": env.L0[idx, 0].item(),
+            "L0_r": env.L0[idx, 1].item(),
+            "L0_dot_l": env.L0_dot[idx, 0].item(),
+            "L0_dot_r": env.L0_dot[idx, 1].item(),
+            "dof_pos_l_hip": env.dof_pos[idx, 0].item(),
+            "dof_pos_l_knee": env.dof_pos[idx, 1].item(),
+            "dof_pos_l_wheel": env.dof_pos[idx, 2].item(),
+            "dof_pos_r_hip": env.dof_pos[idx, 3].item(),
+            "dof_pos_r_knee": env.dof_pos[idx, 4].item(),
+            "dof_pos_r_wheel": env.dof_pos[idx, 5].item(),
+            "dof_vel_l_wheel": env.dof_vel[idx, 2].item(),
+            "dof_vel_r_wheel": env.dof_vel[idx, 5].item(),
+            "torque_l_hip": env.torques[idx, 0].item(),
+            "torque_l_knee": env.torques[idx, 1].item(),
+            "torque_l_wheel": env.torques[idx, 2].item(),
+            "torque_r_hip": env.torques[idx, 3].item(),
+            "torque_r_knee": env.torques[idx, 4].item(),
+            "torque_r_wheel": env.torques[idx, 5].item(),
+            "torque_wheel_l_cmd": torque_wheel[idx, 0].item() if torque_wheel is not None else float("nan"),
+            "torque_wheel_r_cmd": torque_wheel[idx, 1].item() if torque_wheel is not None else float("nan"),
+            "contact_l_norm": contact_norm[0].item() if contact_norm.numel() > 0 else float("nan"),
+            "contact_r_norm": contact_norm[1].item() if contact_norm.numel() > 1 else float("nan"),
+            "contact_l_z": contacts[0, 2].item() if contacts.shape[0] > 0 else float("nan"),
+            "contact_r_z": contacts[1, 2].item() if contacts.shape[0] > 1 else float("nan"),
+            "reset": env.reset_buf[idx].item(),
+        }
+
+        self.writer.writerow(row)
+        self.file.flush()
+        print(
+            "[runtime_log] "
+            f"step={row['step']} cmd_vx={row['command_vx']:.3f} "
+            f"teleop_vx={row['teleop_vx']:.3f} v_fwd={row['base_vel_forward']:.3f} "
+            f"h={row['base_height']:.3f}/{row['command_height']:.3f} "
+            f"roll={row['roll']:.3f} pitch={row['pitch']:.3f} "
+            f"wheel_vel=({row['dof_vel_l_wheel']:.3f},{row['dof_vel_r_wheel']:.3f}) "
+            f"wheel_tau=({row['torque_l_wheel']:.3f},{row['torque_r_wheel']:.3f}) "
+            f"L0=({row['L0_l']:.3f},{row['L0_r']:.3f})"
+        )
+
+
 def play(args):
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     lqr_demo = getattr(args, "lqr_demo", False)
@@ -249,6 +461,7 @@ def play(args):
 
     logger = Logger(env.dt)
     robot_index = 0  # which robot is used for logging (reduced from 21 due to smaller num_envs for inference)
+    runtime_logger = RuntimeStateLogger(env, env_cfg, train_cfg, args, robot_index)
     joint_index = 1  # which joint is used for logging
     stop_state_log = 1000  # number of steps before plotting states
     stop_rew_log = (
@@ -262,135 +475,152 @@ def play(args):
     CoM_offset_compensate = True and not USE_KEYBOARD_TELEOP and not lqr_demo
     vel_err_intergral = torch.zeros(env.num_envs, device=env.device)
     vel_cmd = torch.zeros(env.num_envs, device=env.device)
+    height_cmd = float(getattr(env_cfg.rewards, "base_height_target", 0.18))
 
-    for i in range(1000 * int(env.max_episode_length)):
-        if lqr_demo:
-            actions = actions_zero
-        elif ppo_runner.alg.actor_critic.is_sequence:
-            actions, latent = policy(obs, obs_history)
-        else:
-            actions = policy(obs.detach())
-
-        if USE_KEYBOARD_TELEOP and getattr(env, "_keyboard_teleop_state", None) is not None:
-            apply_keyboard_commands(env)
-        elif lqr_demo:
-            env.commands[:, 0] = 0.0
-            env.commands[:, 2] = 0.18
-            env.commands[:, 3] = 0.0
-        else:
-            env.commands[:, 0] = 2.5
-            env.commands[:, 2] = 0.18  # + 0.07 * np.sin(i * 0.01)
-            env.commands[:, 3] = 0
-
-        if CoM_offset_compensate:
-            if i > 200 and i < 600:
-                vel_cmd[:] = 2.5 * np.clip((i - 200) * 0.05, 0, 1)
+    try:
+        for i in range(1000 * int(env.max_episode_length)):
+            if lqr_demo:
+                actions = actions_zero
+            elif ppo_runner.alg.actor_critic.is_sequence:
+                actions, latent = policy(obs, obs_history)
             else:
-                vel_cmd[:] = 0
-            vel_err_intergral += (
-                (vel_cmd - env.base_lin_vel[:, 0])
-                * env.dt
-                * ((vel_cmd - env.base_lin_vel[:, 0]).abs() < 0.5)
-            )
-            vel_err_intergral = torch.clip(vel_err_intergral, -0.5, 0.5)
-            env.commands[:, 0] = vel_cmd + vel_err_intergral
+                actions = policy(obs.detach())
 
-        obs, _, rews, dones, infos, obs_history = env.step(actions)
-        if RECORD_FRAMES:
-            if i % 2:
-                filename = os.path.join(
-                    WHEEL_LEGGED_GYM_ROOT_DIR,
-                    "logs",
-                    train_cfg.runner.experiment_name,
-                    "exported",
-                    "frames",
-                    f"{img_idx}.png",
-                )
-                env.gym.write_viewer_image_to_file(env.viewer, filename)
-                img_idx += 1
-        if MOVE_CAMERA:
-            camera_offset = np.array(env_cfg.viewer.pos)
-            target_position = np.array(
-                env.base_position[robot_index, :].to(device="cpu")
-            )
-            camera_position = target_position + camera_offset
-            env.set_camera(camera_position, target_position)
+            if (
+                USE_KEYBOARD_TELEOP
+                and getattr(env, "_keyboard_teleop_state", None) is not None
+            ):
+                apply_keyboard_commands(env)
+            elif lqr_demo:
+                env.commands[:, 0] = 0.0
+                env.commands[:, 2] = height_cmd
+                env.commands[:, 3] = 0.0
+            else:
+                env.commands[:, 0] = 2.5
+                env.commands[:, 2] = height_cmd  # + 0.07 * np.sin(i * 0.01)
+                env.commands[:, 3] = 0
 
-        if i < stop_state_log:
-            logger.log_states(
-                {
-                    "dof_pos_target": actions[robot_index, joint_index].item()
-                    * env.cfg.control.action_scale
-                    + env.default_dof_pos[robot_index, joint_index].item(),
-                    "dof_pos": env.dof_pos[robot_index, joint_index].item(),
-                    "dof_vel": env.dof_vel[robot_index, joint_index].item(),
-                    "dof_torque": env.torques[robot_index, joint_index].item(),
-                    "command_yaw": env.commands[robot_index, 1].item(),
-                    "command_height": env.commands[robot_index, 2].item(),
-                    "base_height": env.base_height[robot_index].item(),
-                    "base_vel_x": env.base_lin_vel[robot_index, 0].item(),
-                    "base_vel_y": env.base_lin_vel[robot_index, 1].item(),
-                    "base_vel_z": env.base_lin_vel[robot_index, 2].item(),
-                    "base_vel_yaw": env.base_ang_vel[robot_index, 2].item(),
-                    "contact_forces_z": env.contact_forces[
-                        robot_index, env.feet_indices, 2
-                    ]
-                    .cpu()
-                    .numpy(),
-                }
-            )
             if CoM_offset_compensate:
-                logger.log_states({"command_x": vel_cmd[robot_index].item()})
-            else:
-                logger.log_states({"command_x": env.commands[robot_index, 0].item()})
-            if latent is not None:
+                forward_lin_vel = get_forward_lin_vel(env)
+                if i > 200 and i < 600:
+                    vel_cmd[:] = 2.5 * np.clip((i - 200) * 0.05, 0, 1)
+                else:
+                    vel_cmd[:] = 0
+                vel_err_intergral += (
+                    (vel_cmd - forward_lin_vel)
+                    * env.dt
+                    * ((vel_cmd - forward_lin_vel).abs() < 0.5)
+                )
+                vel_err_intergral = torch.clip(vel_err_intergral, -0.5, 0.5)
+                env.commands[:, 0] = vel_cmd + vel_err_intergral
+
+            obs, _, rews, dones, infos, obs_history = env.step(actions)
+            runtime_logger.maybe_log(i, actions)
+            if RECORD_FRAMES:
+                if i % 2:
+                    filename = os.path.join(
+                        WHEEL_LEGGED_GYM_ROOT_DIR,
+                        "logs",
+                        train_cfg.runner.experiment_name,
+                        "exported",
+                        "frames",
+                        f"{img_idx}.png",
+                    )
+                    env.gym.write_viewer_image_to_file(env.viewer, filename)
+                    img_idx += 1
+            if MOVE_CAMERA:
+                camera_offset = np.array(env_cfg.viewer.pos)
+                target_position = np.array(
+                    env.base_position[robot_index, :].to(device="cpu")
+                )
+                camera_position = target_position + camera_offset
+                env.set_camera(camera_position, target_position)
+
+            if i < stop_state_log:
                 logger.log_states(
                     {
-                        "est_lin_vel_x": latent[robot_index, 0].item()
-                        / env.cfg.normalization.obs_scales.lin_vel,
-                        "est_lin_vel_y": latent[robot_index, 1].item()
-                        / env.cfg.normalization.obs_scales.lin_vel,
-                        "est_lin_vel_z": latent[robot_index, 2].item()
-                        / env.cfg.normalization.obs_scales.lin_vel,
+                        "dof_pos_target": actions[robot_index, joint_index].item()
+                        * env.cfg.control.action_scale
+                        + env.default_dof_pos[robot_index, joint_index].item(),
+                        "dof_pos": env.dof_pos[robot_index, joint_index].item(),
+                        "dof_vel": env.dof_vel[robot_index, joint_index].item(),
+                        "dof_torque": env.torques[robot_index, joint_index].item(),
+                        "command_yaw": env.commands[robot_index, 1].item(),
+                        "command_height": env.commands[robot_index, 2].item(),
+                        "base_height": env.base_height[robot_index].item(),
+                        "base_vel_x": get_forward_lin_vel(env)[robot_index].item(),
+                        "base_vel_y": env.base_lin_vel[robot_index, 1].item(),
+                        "base_vel_z": env.base_lin_vel[robot_index, 2].item(),
+                        "base_vel_yaw": env.base_ang_vel[robot_index, 2].item(),
+                        "contact_forces_z": env.contact_forces[
+                            robot_index, env.feet_indices, 2
+                        ]
+                        .cpu()
+                        .numpy(),
                     }
                 )
-                if latent.shape[1] > 3 and env_cfg.noise.add_noise:
+                if CoM_offset_compensate:
+                    logger.log_states({"command_x": vel_cmd[robot_index].item()})
+                else:
+                    logger.log_states(
+                        {"command_x": env.commands[robot_index, 0].item()}
+                    )
+                if latent is not None:
                     logger.log_states(
                         {
-                            "base_vel_yaw_obs": obs[robot_index, 2].item()
-                            / env.cfg.normalization.obs_scales.ang_vel,
-                            "dof_pos_obs": obs[robot_index, 9 + joint_index].item()
-                            / env.cfg.normalization.obs_scales.dof_pos
-                            + env.default_dof_pos[robot_index, joint_index].item(),
-                            "dof_vel_obs": obs[robot_index, 15 + joint_index].item()
-                            / env.cfg.normalization.obs_scales.dof_vel,
+                            "est_lin_vel_x": latent[robot_index, 0].item()
+                            / env.cfg.normalization.obs_scales.lin_vel,
+                            "est_lin_vel_y": latent[robot_index, 1].item()
+                            / env.cfg.normalization.obs_scales.lin_vel,
+                            "est_lin_vel_z": latent[robot_index, 2].item()
+                            / env.cfg.normalization.obs_scales.lin_vel,
                         }
                     )
-                    logger.log_states(
-                        {
-                            "base_vel_yaw_est": latent[robot_index, 3 + 2].item()
-                            / env.cfg.normalization.obs_scales.ang_vel,
-                            "dof_pos_est": latent[
-                                robot_index, 3 + 9 + joint_index
-                            ].item()
-                            / env.cfg.normalization.obs_scales.dof_pos
-                            + env.default_dof_pos[robot_index, joint_index].item(),
-                            "dof_vel_est": latent[
-                                robot_index, 3 + 15 + joint_index
-                            ].item()
-                            / env.cfg.normalization.obs_scales.dof_vel,
-                        }
-                    )
-        elif i == stop_state_log:
-            logger.plot_states()
-        if 0 < i < stop_rew_log:
-            episode_info = infos.get("episode")
-            if episode_info:
-                num_episodes = torch.sum(env.reset_buf).item()
-                if num_episodes > 0:
-                    logger.log_rewards(episode_info, num_episodes)
-        elif i == stop_rew_log:
-            logger.print_rewards()
+                    if latent.shape[1] > 3 and env_cfg.noise.add_noise:
+                        logger.log_states(
+                            {
+                                "base_vel_yaw_obs": obs[robot_index, 2].item()
+                                / env.cfg.normalization.obs_scales.ang_vel,
+                                "dof_pos_obs": obs[robot_index, 9 + joint_index].item()
+                                / env.cfg.normalization.obs_scales.dof_pos
+                                + env.default_dof_pos[
+                                    robot_index, joint_index
+                                ].item(),
+                                "dof_vel_obs": obs[robot_index, 15 + joint_index].item()
+                                / env.cfg.normalization.obs_scales.dof_vel,
+                            }
+                        )
+                        logger.log_states(
+                            {
+                                "base_vel_yaw_est": latent[
+                                    robot_index, 3 + 2
+                                ].item()
+                                / env.cfg.normalization.obs_scales.ang_vel,
+                                "dof_pos_est": latent[
+                                    robot_index, 3 + 9 + joint_index
+                                ].item()
+                                / env.cfg.normalization.obs_scales.dof_pos
+                                + env.default_dof_pos[
+                                    robot_index, joint_index
+                                ].item(),
+                                "dof_vel_est": latent[
+                                    robot_index, 3 + 15 + joint_index
+                                ].item()
+                                / env.cfg.normalization.obs_scales.dof_vel,
+                            }
+                        )
+            elif i == stop_state_log:
+                logger.plot_states()
+            if 0 < i < stop_rew_log:
+                episode_info = infos.get("episode")
+                if episode_info:
+                    num_episodes = torch.sum(env.reset_buf).item()
+                    if num_episodes > 0:
+                        logger.log_rewards(episode_info, num_episodes)
+            elif i == stop_rew_log:
+                logger.print_rewards()
+    finally:
+        runtime_logger.close()
 
 
 if __name__ == "__main__":

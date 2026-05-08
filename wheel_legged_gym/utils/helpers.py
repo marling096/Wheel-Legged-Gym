@@ -30,11 +30,11 @@
 
 import os
 import copy
-import torch
 import numpy as np
 import random
 from isaacgym import gymapi
 from isaacgym import gymutil
+import torch
 
 from wheel_legged_gym import WHEEL_LEGGED_GYM_ROOT_DIR, WHEEL_LEGGED_GYM_ENVS_DIR
 
@@ -253,9 +253,20 @@ def get_args():
             "help": "play.py only: single robot, no RL checkpoint; model LQR virtual-leg control (forces vmc_lqr).",
         },
         {
+            "name": "--runtime_log_interval",
+            "type": int,
+            "default": 50,
+            "help": "play.py only: print and CSV-log runtime state every N control steps; <=0 disables it.",
+        },
+        {
+            "name": "--runtime_log_path",
+            "type": str,
+            "help": "play.py only: CSV path for runtime state diagnostics. Defaults to logs/<experiment>/runtime_state_<task>.csv.",
+        },
+        {
             "name": "--run_name",
             "type": str,
-            "help": "Run name suffix in log folder; omit or empty uses timestamp %Y%m%d_%H%M%S_mmm.",
+            "help": "Run name suffix in log folder; omit or empty uses timestamp YYYYmmdd_HHMMSS_mmm.",
         },
         {
             "name": "--load_run",
