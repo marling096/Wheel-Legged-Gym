@@ -492,6 +492,13 @@ class LeggedRobot(BaseTask):
         Returns:
             [numpy.array]: Modified DOF properties
         """
+        if getattr(self.cfg.asset, "force_effort_dof_props", False):
+            props["driveMode"].fill(gymapi.DOF_MODE_EFFORT)
+        if getattr(self.cfg.asset, "zero_dof_stiffness", False):
+            props["stiffness"].fill(0.0)
+        if getattr(self.cfg.asset, "zero_dof_damping", False):
+            props["damping"].fill(0.0)
+
         velocity_overrides = getattr(self.cfg.asset, "dof_velocity_limits", {})
         if velocity_overrides:
             dof_names = getattr(self, "dof_names", [])
