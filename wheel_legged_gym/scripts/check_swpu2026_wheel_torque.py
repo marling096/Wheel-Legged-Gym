@@ -47,7 +47,7 @@ def main():
 
     wheel_ids = list(env.wheel_dof_indices)
     torques = torch.zeros_like(env.torques)
-    torques[:, wheel_ids] = 20.0
+    torques[:, wheel_ids] = 5.0
 
     start_pos = env.dof_pos[:, wheel_ids].clone()
     start_root = env.root_states[:, :3].clone()
@@ -69,7 +69,7 @@ def main():
 
     labels = ["ground", "air"]
     print("swpu2026 constant wheel torque check")
-    print(f"wheel_dof_indices={wheel_ids}, applied_torque_nm=20.0, steps={steps}")
+    print(f"wheel_dof_indices={wheel_ids}, applied_torque_nm=5.0, steps={steps}")
     for i, label in enumerate(labels):
         print(
             f"{label}: "

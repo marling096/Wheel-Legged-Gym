@@ -507,6 +507,14 @@ class LeggedRobot(BaseTask):
                     if key in dof_name:
                         props["velocity"][i] = value
                         break
+        effort_overrides = getattr(self.cfg.asset, "dof_effort_limits", {})
+        if effort_overrides:
+            dof_names = getattr(self, "dof_names", [])
+            for i, dof_name in enumerate(dof_names):
+                for key, value in effort_overrides.items():
+                    if key in dof_name:
+                        props["effort"][i] = value
+                        break
         if env_id == 0:
             self.dof_pos_limits = torch.zeros(
                 self.num_dof,

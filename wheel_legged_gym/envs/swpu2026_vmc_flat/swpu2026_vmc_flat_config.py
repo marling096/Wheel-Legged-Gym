@@ -64,6 +64,11 @@ class Swpu2026VMCFlatCfg(WheelLeggedVMCFlatCfg):
             "f1": 100.0,
             "wheel": 100.0,
         }
+        dof_effort_limits = {
+            "f0": 30.0,
+            "f1": 30.0,
+            "wheel": 5.0,
+        }
 
     class commands(WheelLeggedVMCFlatCfg.commands):
         class ranges(WheelLeggedVMCFlatCfg.commands.ranges):
