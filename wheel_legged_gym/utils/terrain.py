@@ -99,6 +99,11 @@ class Terrain:
         rand_cell = getattr(cfg, "undulating_randomize_cell", True)
         wl_jit = getattr(cfg, "undulating_wavelength_jitter", 0.35)
         amp_jit = getattr(cfg, "undulating_amplitude_jitter", 0.0)
+        patch_length = getattr(cfg, "undulating_patch_length", None)
+        patch_width = getattr(cfg, "undulating_patch_width", None)
+        patch_center_x = getattr(cfg, "undulating_patch_center_x", None)
+        patch_center_y = getattr(cfg, "undulating_patch_center_y", None)
+        patch_falloff = getattr(cfg, "undulating_patch_falloff", 0.0)
         for k in range(self.cfg.num_sub_terrains):
             (i, j) = np.unravel_index(k, (self.cfg.num_rows, self.cfg.num_cols))
             terrain = terrain_utils.SubTerrain(
@@ -121,7 +126,7 @@ class Terrain:
                 phx = phy = 0.0
                 wx, wy = wl_x, wl_y
                 amp_cell = amp
-            if profile == "speed_bumps":
+            if profile in ["speed_bumps", "speed_bumps_gravel"]:
                 speed_bump_terrain(
                     terrain,
                     amplitude=amp_cell,
@@ -131,6 +136,49 @@ class Terrain:
                     lateral_amplitude=lateral_amp,
                     lateral_wavelength=wy,
                     phase_y=phy,
+                    patch_length=patch_length,
+                    patch_width=patch_width,
+                    patch_center_x=patch_center_x,
+                    patch_center_y=patch_center_y,
+                    patch_falloff=patch_falloff,
+                )
+                if profile == "speed_bumps_gravel":
+                    gravel_road_terrain(
+                        terrain,
+                        roughness=getattr(cfg, "gravel_roughness", 0.018),
+                        block_size=getattr(cfg, "gravel_block_size", 0.18),
+                        block_height_range=getattr(
+                            cfg, "gravel_block_height_range", (-0.035, 0.055)
+                        ),
+                        block_slope=getattr(cfg, "gravel_block_slope", 0.012),
+                        stone_density=getattr(cfg, "gravel_stone_density", 1.8),
+                        stone_height_range=getattr(
+                            cfg, "gravel_stone_height_range", (0.015, 0.065)
+                        ),
+                        stone_radius_range=getattr(
+                            cfg, "gravel_stone_radius_range", (0.06, 0.20)
+                        ),
+                        rut_depth=getattr(cfg, "gravel_rut_depth", 0.012),
+                        rut_width=getattr(cfg, "gravel_rut_width", 0.38),
+                    )
+            elif profile == "gravel":
+                gravel_road_terrain(
+                    terrain,
+                    roughness=getattr(cfg, "gravel_roughness", 0.025),
+                    block_size=getattr(cfg, "gravel_block_size", 0.18),
+                    block_height_range=getattr(
+                        cfg, "gravel_block_height_range", (-0.035, 0.060)
+                    ),
+                    block_slope=getattr(cfg, "gravel_block_slope", 0.014),
+                    stone_density=getattr(cfg, "gravel_stone_density", 2.4),
+                    stone_height_range=getattr(
+                        cfg, "gravel_stone_height_range", (0.015, 0.075)
+                    ),
+                    stone_radius_range=getattr(
+                        cfg, "gravel_stone_radius_range", (0.06, 0.22)
+                    ),
+                    rut_depth=getattr(cfg, "gravel_rut_depth", 0.018),
+                    rut_width=getattr(cfg, "gravel_rut_width", 0.42),
                 )
             else:
                 undulating_wave_terrain(
@@ -315,6 +363,11 @@ def speed_bump_terrain(
     lateral_amplitude=0.0,
     lateral_wavelength=4.0,
     phase_y=0.0,
+    patch_length=None,
+    patch_width=None,
+    patch_center_x=None,
+    patch_center_y=None,
+    patch_falloff=0.0,
 ):
     """Repeated rounded speed bumps in meters; ridges run across the y axis."""
     hs = terrain.horizontal_scale
@@ -337,6 +390,134 @@ def speed_bump_terrain(
     if lateral_amplitude != 0.0:
         ky = 2.0 * np.pi / max(float(lateral_wavelength), 0.25)
         z_m = z_m + float(lateral_amplitude) * np.sin(ky * y_m + phase_y)
+    if patch_length is not None or patch_width is not None:
+        center_x = (
+            terrain.length * hs * 0.5
+            if patch_center_x is None
+            else float(patch_center_x)
+        )
+        center_y = (
+            terrain.width * hs * 0.5 if patch_center_y is None else float(patch_center_y)
+        )
+        half_length = (
+            terrain.length * hs if patch_length is None else float(patch_length)
+        ) * 0.5
+        half_width_patch = (
+            terrain.width * hs if patch_width is None else float(patch_width)
+        ) * 0.5
+        dx_edge = half_length - np.abs(x_m - center_x)
+        dy_edge = half_width_patch - np.abs(y_m - center_y)
+        inside_margin = np.minimum(dx_edge, dy_edge)
+        falloff = max(float(patch_falloff), 0.0)
+        if falloff > 0.0:
+            patch_mask = np.clip(inside_margin / falloff, 0.0, 1.0)
+        else:
+            patch_mask = (inside_margin >= 0.0).astype(np.float64)
+        z_m = z_m * patch_mask
+    terrain.height_field_raw[:, :] = np.clip(
+        np.rint(z_m / vs).astype(np.int16), -32768, 32767
+    )
+
+
+def gravel_road_terrain(
+    terrain,
+    roughness=0.025,
+    block_size=0.18,
+    block_height_range=(-0.035, 0.060),
+    block_slope=0.014,
+    stone_density=2.4,
+    stone_height_range=(0.015, 0.075),
+    stone_radius_range=(0.06, 0.22),
+    rut_depth=0.018,
+    rut_width=0.42,
+):
+    """Dense blocky gravel road with low-poly facets and shallow ruts."""
+    hs = terrain.horizontal_scale
+    vs = terrain.vertical_scale
+    ix = np.arange(terrain.length, dtype=np.float64)[:, None]
+    iy = np.arange(terrain.width, dtype=np.float64)[None, :]
+    x_m = ix * hs
+    y_m = iy * hs
+    z_m = terrain.height_field_raw.astype(np.float64) * vs
+
+    coarse_step = max(2, int(0.45 / hs))
+    coarse_shape = (
+        max(2, int(np.ceil(terrain.length / coarse_step)) + 1),
+        max(2, int(np.ceil(terrain.width / coarse_step)) + 1),
+    )
+    coarse_x = np.linspace(0.0, terrain.length - 1, coarse_shape[0])
+    coarse_y = np.linspace(0.0, terrain.width - 1, coarse_shape[1])
+    fine_x = np.arange(terrain.length, dtype=np.float64)
+    fine_y = np.arange(terrain.width, dtype=np.float64)
+    coarse_noise = np.random.uniform(-1.0, 1.0, coarse_shape)
+    interp = interpolate.RectBivariateSpline(
+        coarse_x, coarse_y, coarse_noise, kx=1, ky=1
+    )
+    z_m += float(roughness) * interp(fine_x, fine_y)
+
+    width_m = terrain.width * hs
+    length_m = terrain.length * hs
+    block_cells = max(1, int(round(float(block_size) / hs)))
+    block_rows = int(np.ceil(terrain.length / block_cells))
+    block_cols = int(np.ceil(terrain.width / block_cells))
+    block_min, block_max = block_height_range
+    block_heights = np.random.uniform(block_min, block_max, (block_rows, block_cols))
+    block_heights += np.random.normal(0.0, float(roughness) * 0.35, block_heights.shape)
+    block_heights = np.clip(block_heights, block_min, block_max)
+    block_heights = np.repeat(
+        np.repeat(block_heights, block_cells, axis=0), block_cells, axis=1
+    )
+    block_heights = block_heights[: terrain.length, : terrain.width]
+
+    local_x = (np.arange(terrain.length) % block_cells).astype(np.float64)
+    local_y = (np.arange(terrain.width) % block_cells).astype(np.float64)
+    local_x = (local_x / max(block_cells - 1, 1) - 0.5)[:, None]
+    local_y = (local_y / max(block_cells - 1, 1) - 0.5)[None, :]
+    slope_x = np.random.uniform(-1.0, 1.0, (block_rows, block_cols))
+    slope_y = np.random.uniform(-1.0, 1.0, (block_rows, block_cols))
+    slope_x = np.repeat(np.repeat(slope_x, block_cells, axis=0), block_cells, axis=1)
+    slope_y = np.repeat(np.repeat(slope_y, block_cells, axis=0), block_cells, axis=1)
+    slope_x = slope_x[: terrain.length, : terrain.width]
+    slope_y = slope_y[: terrain.length, : terrain.width]
+    facets = float(block_slope) * (slope_x * local_x + slope_y * local_y)
+    z_m += block_heights + facets
+
+    area_m2 = width_m * length_m
+    num_stones = max(1, int(float(stone_density) * area_m2))
+    h_min, h_max = stone_height_range
+    r_min, r_max = stone_radius_range
+    for _ in range(num_stones):
+        cx = float(np.random.uniform(0.0, length_m))
+        cy = float(np.random.uniform(0.0, width_m))
+        radius = float(np.random.uniform(r_min, r_max))
+        height = float(np.random.uniform(h_min, h_max))
+        if np.random.uniform() < 0.18:
+            height *= -0.45
+        ix0 = max(0, int((cx - radius) / hs))
+        ix1 = min(terrain.length, int((cx + radius) / hs) + 1)
+        iy0 = max(0, int((cy - radius) / hs))
+        iy1 = min(terrain.width, int((cy + radius) / hs) + 1)
+        if ix1 <= ix0 or iy1 <= iy0:
+            continue
+        dx = x_m[ix0:ix1] - cx
+        dy = y_m[:, iy0:iy1] - cy
+        dist = np.sqrt(dx * dx + dy * dy)
+        stone = np.where(
+            dist <= radius,
+            0.5 * height * (1.0 + np.cos(np.pi * dist / radius)),
+            0.0,
+        )
+        z_m[ix0:ix1, iy0:iy1] += stone
+
+    if rut_depth > 0.0:
+        center_y = 0.5 * width_m
+        track_half_gap = min(0.42, width_m * 0.18)
+        sigma = max(float(rut_width) * 0.5, hs)
+        ruts = np.exp(-0.5 * ((y_m - (center_y - track_half_gap)) / sigma) ** 2)
+        ruts += np.exp(-0.5 * ((y_m - (center_y + track_half_gap)) / sigma) ** 2)
+        longitudinal = 0.65 + 0.35 * np.sin(2.0 * np.pi * x_m / 2.8)
+        z_m -= float(rut_depth) * longitudinal * ruts
+
     terrain.height_field_raw[:, :] = np.clip(
         np.rint(z_m / vs).astype(np.int16), -32768, 32767
     )

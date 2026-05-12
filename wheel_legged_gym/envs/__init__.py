@@ -44,6 +44,10 @@ from .wheel_legged_vmc_undulating.wheel_legged_vmc_undulating_config import (
     WheelLeggedVMCUndulatingCfg,
     WheelLeggedVMCUndulatingCfgPPO,
 )
+from .wheel_legged_vmc_gravel.wheel_legged_vmc_gravel_config import (
+    WheelLeggedVMCGravelCfg,
+    WheelLeggedVMCGravelCfgPPO,
+)
 from .swpu2026_vmc_flat.swpu2026_vmc_flat_config import (
     Swpu2026VMCFlatCfg,
     Swpu2026VMCFlatCfgPPO,
@@ -51,6 +55,10 @@ from .swpu2026_vmc_flat.swpu2026_vmc_flat_config import (
 from .swpu2026_vmc_undulating.swpu2026_vmc_undulating_config import (
     Swpu2026VMCUndulatingCfg,
     Swpu2026VMCUndulatingCfgPPO,
+)
+from .swpu2026_vmc_gravel.swpu2026_vmc_gravel_config import (
+    Swpu2026VMCGravelCfg,
+    Swpu2026VMCGravelCfgPPO,
 )
 
 
@@ -77,6 +85,12 @@ task_registry.register(
     WheelLeggedVMCUndulatingCfgPPO(),
 )
 task_registry.register(
+    "wheel_legged_vmc_gravel",
+    LeggedRobotVMC,
+    WheelLeggedVMCGravelCfg(),
+    WheelLeggedVMCGravelCfgPPO(),
+)
+task_registry.register(
     "swpu2026_vmc_flat",
     LeggedRobotVMC,
     Swpu2026VMCFlatCfg(),
@@ -87,4 +101,10 @@ task_registry.register(
     LeggedRobotVMC,
     Swpu2026VMCUndulatingCfg(),
     Swpu2026VMCUndulatingCfgPPO(),
+)
+task_registry.register(
+    "swpu2026_vmc_gravel",
+    LeggedRobotVMC,
+    Swpu2026VMCGravelCfg(),
+    Swpu2026VMCGravelCfgPPO(),
 )

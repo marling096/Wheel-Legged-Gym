@@ -29,15 +29,20 @@ class Swpu2026VMCUndulatingCfg(Swpu2026VMCFlatCfg):
         undulating_randomize_cell = True
         undulating_wavelength_jitter = 0.12
         undulating_amplitude_jitter = 0.12
+        undulating_patch_length = 2.8
+        undulating_patch_width = 2.2
+        undulating_patch_center_x = 4.0
+        undulating_patch_center_y = 4.0
+        undulating_patch_falloff = 0.20
 
         num_rows = 5
         num_cols = 5
 
     class viewer(Swpu2026VMCFlatCfg.viewer):
         draw_terrain_contours = True
-        terrain_contour_range = 6.0
-        terrain_contour_stride = 2
-        terrain_contour_max_lines = 1100
+        terrain_contour_range = 3.2
+        terrain_contour_stride = 4
+        terrain_contour_max_lines = 260
         terrain_contour_height_offset = 0.025
 
 
