@@ -55,6 +55,9 @@ def install_keyboard_teleop(env, env_cfg):
       [:, 2] height, [:, 3] heading target [rad].
 
     Requires viewer (non-headless). Callbacks run inside BaseTask.render during env.step().
+
+    高度 ``commands[:,2]`` 为 ``base_height`` 目标（米），与奖励/观测一致，不是「髋关节抬角」；
+    主键用 ``]`` / ``[`` 避免与 viewer 的 ``=`` / ``-`` 缩放冲突。
     """
 
     vx_min, vx_max = env_cfg.commands.ranges.lin_vel_x
@@ -128,16 +131,17 @@ def install_keyboard_teleop(env, env_cfg):
         "teleop_heading_right_arw",
         lambda e: on_press(e, lambda: bump_heading(-dheading)),
     )
-    bind(
-        gymapi.KEY_Q,
-        "teleop_height_high",
-        lambda e: on_press(e, lambda: state.update({"height": h_max})),
-    )
-    bind(
-        gymapi.KEY_E,
-        "teleop_height_low",
-        lambda e: on_press(e, lambda: state.update({"height": h_min})),
-    )
+    def set_height_high(evt):
+        on_press(evt, lambda: state.update({"height": h_max}))
+
+    def set_height_low(evt):
+        on_press(evt, lambda: state.update({"height": h_min}))
+
+    # 主键：不与 viewer 默认缩放抢键；= / - 仍绑定作备用（部分环境可能收不到）
+    bind(gymapi.KEY_RIGHT_BRACKET, "teleop_height_high_rb", set_height_high)
+    bind(gymapi.KEY_LEFT_BRACKET, "teleop_height_low_lb", set_height_low)
+    bind(gymapi.KEY_EQUAL, "teleop_height_high_eq", set_height_high)
+    bind(gymapi.KEY_MINUS, "teleop_height_low_mn", set_height_low)
     bind(
         gymapi.KEY_SPACE,
         "teleop_stop_vx",
@@ -152,7 +156,9 @@ def install_keyboard_teleop(env, env_cfg):
         f"  W/S 或 ↑/↓ : 线速度指令一次到位 "
         f"(前进={vx_forward:.2f} m/s, 后退={vx_reverse:.2f} m/s，取自 cfg.commands.ranges.lin_vel_x)\n"
         f"  A/D 或 ←/→ : 目标航向单次转动 {dheading:.1f} rad（heading_command=True 时生效）\n"
-        "  Q/E        : 高度指令为高限 / 低限（cfg.commands.ranges.height）\n"
+        f"  ] / [      : 高度指令为高限 / 低限（米）= cfg 中 height 范围 [{h_min:.2f}, {h_max:.2f}]；"
+        "为 base_height 目标，非「抬腿角度」\n"
+        "  = / -      : 同上备用键（若被 viewer 缩放占用则无效果，请用 ] / [）\n"
         "  Space      : 线速度归零\n"
         "  V          : 切换 viewer 同步（原有） Esc : 退出\n"
     )
@@ -168,10 +174,60 @@ def apply_keyboard_commands(env):
     env.commands[:, 0] = vx
     env.commands[:, 2] = ht
     env.commands[:, 3] = h
+    if getattr(env.cfg.commands, "heading_command", False):
+        forward = quat_apply(env.base_quat, env.forward_vec)
+        heading = torch.atan2(forward[:, 1], forward[:, 0])
+        heading_gain = getattr(env.cfg.commands, "heading_control_gain", 1.5)
+        env.commands[:, 1] = torch.clip(
+            heading_gain * wrap_to_pi(env.commands[:, 3] - heading), -5, 5
+        )
+    # policy 读的是 obs_buf 里的 commands[:,:3]，若在 policy() 之后才改 env.commands 会滞后一整步
+    scale = getattr(env, "commands_scale", None)
+    if (
+        scale is not None
+        and scale.numel() >= 3
+        and hasattr(env, "obs_buf")
+        and env.obs_buf.shape[-1] >= 9
+    ):
+        cmd_obs = env.commands[:, :3] * scale.to(
+            device=env.obs_buf.device, dtype=env.obs_buf.dtype
+        )
+        env.obs_buf[:, 6:9] = cmd_obs
+        nh = getattr(env, "obs_history_length", 0)
+        if nh > 0 and hasattr(env, "obs_history"):
+            env.obs_history[:, -env.num_obs :] = env.obs_buf
 
 
 def get_forward_lin_vel(env):
     return torch.sum(env.base_lin_vel * env.forward_vec, dim=1)
+
+
+def _maybe_play_height_assist(env, actions, gain: float):
+    """在策略输出上按高度误差微调虚拟腿长动作通道，仅用于 play 缓解指令长期偏离。"""
+    if gain <= 0.0 or actions is None:
+        return actions
+    if not hasattr(env, "base_height") or actions.ndim != 2 or actions.shape[1] < 6:
+        return actions
+    # 初始化/大倾角时禁用辅助，避免把本就不稳定的姿态进一步推倒
+    if hasattr(env, "projected_gravity"):
+        upright = env.projected_gravity[:, 2] > 0.9
+    else:
+        upright = torch.ones(actions.shape[0], device=actions.device, dtype=torch.bool)
+    if not torch.any(upright):
+        return actions
+    err = env.commands[:, 2] - env.base_height
+    err = torch.clip(err, -0.12, 0.12)
+    d = gain * err
+    d = torch.clip(d, -0.25, 0.25)
+    out = actions.clone()
+    out[upright, 1] = out[upright, 1] + d[upright]
+    out[upright, 4] = out[upright, 4] + d[upright]
+    limits = getattr(env.cfg.control, "action_limits", None)
+    if limits is not None:
+        low = to_torch(limits[0], device=out.device, dtype=out.dtype).unsqueeze(0)
+        high = to_torch(limits[1], device=out.device, dtype=out.dtype).unsqueeze(0)
+        out = torch.maximum(torch.minimum(out, high), low)
+    return out
 
 
 class RuntimeStateLogger:
@@ -393,33 +449,53 @@ def play(args):
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 4)  # reduced for inference to save GPU memory
     if lqr_demo:
         env_cfg.env.num_envs = 1
-    env_cfg.terrain.num_rows = 5
-    env_cfg.terrain.num_cols = 10
-    env_cfg.terrain.max_init_terrain_level = env_cfg.terrain.num_rows - 1
-    env_cfg.terrain.curriculum = True
-    env_cfg.noise.add_noise = False
-    env_cfg.domain_rand.randomize_friction = False
-    env_cfg.domain_rand.friction_range = [0.1, 0.2]
-    env_cfg.domain_rand.randomize_restitution = False
-    env_cfg.domain_rand.randomize_base_com = False
-    env_cfg.domain_rand.push_robots = False
-    env_cfg.domain_rand.push_interval_s = 2
-    env_cfg.domain_rand.max_push_vel_xy = 3
-    env_cfg.domain_rand.randomize_Kp = False
-    env_cfg.domain_rand.randomize_Kd = False
-    env_cfg.domain_rand.randomize_motor_torque = False
-    env_cfg.domain_rand.randomize_default_dof_pos = False
-    env_cfg.domain_rand.randomize_action_delay = False
+    # 勿覆盖起伏地任务的地形网格与 curriculum（与训练 cfg 一致）
+    if not getattr(env_cfg.terrain, "undulating_terrain", False):
+        env_cfg.terrain.num_rows = 5
+        env_cfg.terrain.num_cols = 10
+        env_cfg.terrain.max_init_terrain_level = env_cfg.terrain.num_rows - 1
+        env_cfg.terrain.curriculum = True
+    else:
+        # 起伏地播放时保留训练地形波幅，只固定初始层便于观察。
+        env_cfg.terrain.max_init_terrain_level = 0
+    if not getattr(args, "play_match_train", False):
+        env_cfg.noise.add_noise = False
+        env_cfg.domain_rand.randomize_friction = False
+        env_cfg.domain_rand.friction_range = [0.1, 0.2]
+        env_cfg.domain_rand.randomize_restitution = False
+        env_cfg.domain_rand.randomize_base_com = False
+        env_cfg.domain_rand.push_robots = False
+        env_cfg.domain_rand.push_interval_s = 2
+        env_cfg.domain_rand.max_push_vel_xy = 3
+        env_cfg.domain_rand.randomize_Kp = False
+        env_cfg.domain_rand.randomize_Kd = False
+        env_cfg.domain_rand.randomize_motor_torque = False
+        env_cfg.domain_rand.randomize_default_dof_pos = False
+        env_cfg.domain_rand.randomize_action_delay = False
     if lqr_demo:
         env_cfg.commands.resampling_time = 1e9
 
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
+    if getattr(env_cfg.terrain, "undulating_terrain", False) and getattr(
+        env_cfg.viewer, "draw_terrain_contours", False
+    ):
+        env.debug_viz = True
+    if getattr(args, "play_match_train", False):
+        print("[play] play_match_train: 保留训练 cfg 中的噪声与 domain_rand（未套用 play 默认全关）。")
+    _pha = float(getattr(args, "play_height_assist", 0.0) or 0.0)
+    _pha_warmup = int(getattr(args, "play_height_assist_warmup", 300) or 0)
+    _pha_warmup = max(0, _pha_warmup)
+    if _pha > 0.0:
+        print(
+            f"[play] play_height_assist={_pha}: 在策略动作 L0 通道 (1,4) 上叠加受限修正（仅直立姿态生效），warmup={_pha_warmup} steps。"
+        )
     if USE_KEYBOARD_TELEOP:
         if getattr(args, "headless", False) or env.viewer is None:
             print("USE_KEYBOARD_TELEOP 需要可视化窗口（不要使用 --headless）。")
         else:
             install_keyboard_teleop(env, env_cfg)
+            apply_keyboard_commands(env)
     obs, obs_history = env.get_observations()
 
     policy = None
@@ -479,6 +555,11 @@ def play(args):
 
     try:
         for i in range(1000 * int(env.max_episode_length)):
+            if (
+                USE_KEYBOARD_TELEOP
+                and getattr(env, "_keyboard_teleop_state", None) is not None
+            ):
+                apply_keyboard_commands(env)
             if lqr_demo:
                 actions = actions_zero
             elif ppo_runner.alg.actor_critic.is_sequence:
@@ -486,16 +567,18 @@ def play(args):
             else:
                 actions = policy(obs.detach())
 
-            if (
-                USE_KEYBOARD_TELEOP
-                and getattr(env, "_keyboard_teleop_state", None) is not None
-            ):
-                apply_keyboard_commands(env)
-            elif lqr_demo:
+            pha = float(getattr(args, "play_height_assist", 0.0) or 0.0)
+            if pha > 0.0 and not lqr_demo and i >= _pha_warmup:
+                actions = _maybe_play_height_assist(env, actions, pha)
+
+            if lqr_demo:
                 env.commands[:, 0] = 0.0
                 env.commands[:, 2] = height_cmd
                 env.commands[:, 3] = 0.0
-            else:
+            elif not (
+                USE_KEYBOARD_TELEOP
+                and getattr(env, "_keyboard_teleop_state", None) is not None
+            ):
                 env.commands[:, 0] = 2.5
                 env.commands[:, 2] = height_cmd  # + 0.07 * np.sin(i * 0.01)
                 env.commands[:, 3] = 0
@@ -626,7 +709,7 @@ def play(args):
 if __name__ == "__main__":
     EXPORT_POLICY = True
     RECORD_FRAMES = False
-    MOVE_CAMERA = False
+    MOVE_CAMERA = False  # True 时每帧 set_camera，会锁死鼠标轨道视角；拉近用 legged_robot_config.viewer
     # True：用键盘改 env.commands（需在仿真窗口聚焦）；转向需 cfg.commands.heading_command=True
     USE_KEYBOARD_TELEOP = True
     args = get_args()

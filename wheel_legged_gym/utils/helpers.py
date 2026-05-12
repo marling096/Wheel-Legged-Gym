@@ -264,6 +264,24 @@ def get_args():
             "help": "play.py only: CSV path for runtime state diagnostics. Defaults to logs/<experiment>/runtime_state_<task>.csv.",
         },
         {
+            "name": "--play_match_train",
+            "action": "store_true",
+            "default": False,
+            "help": "play.py only: keep cfg noise/domain_rand as in training (skip play defaults that zero randomization).",
+        },
+        {
+            "name": "--play_height_assist",
+            "type": float,
+            "default": 0.0,
+            "help": "play.py only: add gain*(cmd_height-base_height) to L0 action channels (1,4) after policy; 0 disables. Try 2~8 for wheel_legged_vmc*.",
+        },
+        {
+            "name": "--play_height_assist_warmup",
+            "type": int,
+            "default": 300,
+            "help": "play.py only: warmup steps before enabling play_height_assist.",
+        },
+        {
             "name": "--run_name",
             "type": str,
             "help": "Run name suffix in log folder; omit or empty uses timestamp YYYYmmdd_HHMMSS_mmm.",

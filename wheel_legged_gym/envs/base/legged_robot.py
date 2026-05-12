@@ -79,7 +79,19 @@ class LeggedRobot(BaseTask):
         self.pi = torch.acos(torch.zeros(1, device=self.device)) * 2
 
         if not self.headless:
-            self.set_camera(self.cfg.viewer.pos, self.cfg.viewer.lookat)
+            # viewer.pos / lookat 为相对 ref_env 原点的偏移；地形上 env 在世界坐标系中平移
+            ref_idx = int(self.cfg.viewer.ref_env)
+            ref_idx = max(0, min(ref_idx, self.num_envs - 1))
+            origin = self.env_origins[ref_idx]
+            pos_off = torch.tensor(
+                self.cfg.viewer.pos, device=origin.device, dtype=origin.dtype
+            )
+            look_off = torch.tensor(
+                self.cfg.viewer.lookat, device=origin.device, dtype=origin.dtype
+            )
+            cam_pos = (origin + pos_off).cpu().numpy()
+            cam_look = (origin + look_off).cpu().numpy()
+            self.set_camera(cam_pos.tolist(), cam_look.tolist())
         self._init_buffers()
         self._prepare_reward_function()
         self.init_done = True
@@ -216,6 +228,12 @@ class LeggedRobot(BaseTask):
             dim=1,
         )
         fail_buf |= self.projected_gravity[:, 2] > -0.1
+        min_base_height = getattr(self.cfg.env, "min_base_height", None)
+        if min_base_height is not None:
+            fail_buf |= self.base_height < min_base_height
+        min_leg_length = getattr(self.cfg.env, "min_leg_length", None)
+        if min_leg_length is not None and hasattr(self, "L0"):
+            fail_buf |= torch.any(self.L0 < min_leg_length, dim=1)
         self.fail_buf *= fail_buf
         self.fail_buf += fail_buf
         self.time_out_buf = (
@@ -1551,11 +1569,18 @@ class LeggedRobot(BaseTask):
         """Draws visualizations for dubugging (slows down simulation a lot).
         Default behaviour: draws height measurement points
         """
-        # draw height lines
-        if not self.terrain.cfg.measure_heights:
+        draw_height_points = self.terrain.cfg.measure_heights
+        draw_terrain_contours = getattr(
+            self.cfg.viewer, "draw_terrain_contours", False
+        )
+        if not draw_height_points and not draw_terrain_contours:
             return
         self.gym.clear_lines(self.viewer)
         self.gym.refresh_rigid_body_state_tensor(self.sim)
+        if draw_terrain_contours:
+            self._draw_terrain_contours()
+        if not draw_height_points:
+            return
         sphere_geom = gymutil.WireframeSphereGeometry(0.02, 4, 4, None, color=(1, 1, 0))
         for i in range(self.num_envs):
             base_pos = (self.root_states[i, :3]).cpu().numpy()
@@ -1575,6 +1600,87 @@ class LeggedRobot(BaseTask):
                 gymutil.draw_lines(
                     sphere_geom, self.gym, self.viewer, self.envs[i], sphere_pose
                 )
+
+    def _draw_terrain_contours(self):
+        if self.height_samples is None or len(self.envs) == 0:
+            return
+        ref_env = min(getattr(self.cfg.viewer, "ref_env", 0), self.num_envs - 1)
+        base_pos = self.root_states[ref_env, :3].detach().cpu().numpy()
+        horizontal_scale = float(self.cfg.terrain.horizontal_scale)
+        border_size = float(self.cfg.terrain.border_size)
+        radius = float(getattr(self.cfg.viewer, "terrain_contour_range", 5.0))
+        stride = max(1, int(getattr(self.cfg.viewer, "terrain_contour_stride", 4)))
+        max_lines = max(
+            1, int(getattr(self.cfg.viewer, "terrain_contour_max_lines", 360))
+        )
+        z_offset = float(
+            getattr(self.cfg.viewer, "terrain_contour_height_offset", 0.012)
+        )
+
+        center_x = int((base_pos[0] + border_size) / horizontal_scale)
+        center_y = int((base_pos[1] + border_size) / horizontal_scale)
+        radius_cells = max(stride * 2, int(radius / horizontal_scale))
+        x0 = max(0, center_x - radius_cells)
+        x1 = min(self.height_samples.shape[0] - 1, center_x + radius_cells)
+        y0 = max(0, center_y - radius_cells)
+        y1 = min(self.height_samples.shape[1] - 1, center_y + radius_cells)
+        if x1 <= x0 or y1 <= y0:
+            return
+
+        heights = self.height_samples[x0 : x1 + 1, y0 : y1 + 1].detach().cpu().numpy()
+        h_min = float(np.min(heights))
+        h_max = float(np.max(heights))
+        h_range = max(h_max - h_min, 1e-6)
+
+        def point(ix, iy):
+            return [
+                ix * horizontal_scale - border_size,
+                iy * horizontal_scale - border_size,
+                float(self.height_samples[ix, iy].item()) + z_offset,
+            ]
+
+        def color(z):
+            t = np.clip((z - h_min) / h_range, 0.0, 1.0)
+            low = np.array([0.05, 0.55, 1.0])
+            mid = np.array([0.35, 0.75, 0.35])
+            high = np.array([1.0, 0.45, 0.05])
+            if t < 0.5:
+                return low * (1.0 - 2.0 * t) + mid * (2.0 * t)
+            return mid * (2.0 - 2.0 * t) + high * (2.0 * t - 1.0)
+
+        vertices = []
+        colors = []
+        rows = list(range(x0, x1 + 1, stride))
+        cols = list(range(y0, y1 + 1, stride))
+        for ix in rows:
+            for col_a, col_b in zip(cols[:-1], cols[1:]):
+                if len(colors) >= max_lines:
+                    break
+                pa = point(ix, col_a)
+                pb = point(ix, col_b)
+                vertices.extend([pa, pb])
+                colors.append(color((pa[2] + pb[2]) * 0.5 - z_offset))
+            if len(colors) >= max_lines:
+                break
+        for iy in cols:
+            for row_a, row_b in zip(rows[:-1], rows[1:]):
+                if len(colors) >= max_lines:
+                    break
+                pa = point(row_a, iy)
+                pb = point(row_b, iy)
+                vertices.extend([pa, pb])
+                colors.append(color((pa[2] + pb[2]) * 0.5 - z_offset))
+            if len(colors) >= max_lines:
+                break
+        if not colors:
+            return
+        self.gym.add_lines(
+            self.viewer,
+            self.envs[ref_env],
+            len(colors),
+            np.asarray(vertices, dtype=np.float32),
+            np.asarray(colors, dtype=np.float32),
+        )
 
     def _init_height_points(self):
         """Returns points at which the height measurments are sampled (in base frame)

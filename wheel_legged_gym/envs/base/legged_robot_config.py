@@ -46,6 +46,8 @@ class LeggedRobotCfg(BaseConfig):
         episode_length_s = 20  # episode length in seconds
         dof_vel_use_pos_diff = True
         fail_to_terminal_time_s = 1
+        min_base_height = None
+        min_leg_length = None
 
     class terrain:
         mesh_type = "trimesh"  # "heightfield" # none, plane, heightfield or trimesh
@@ -235,8 +237,16 @@ class LeggedRobotCfg(BaseConfig):
     # viewer camera:
     class viewer:
         ref_env = 0
-        pos = [0, -2, 1]  # [m]
+        pos = [0, -1.4, 0.9]  # [m] 相对 ref_env 原点，略近便于观察整机
         lookat = [0, 0, 0]  # [m]
+        horizontal_fov = 72.0  # 度；略大于默认以扩大视野
+        width = 1280
+        height = 720
+        draw_terrain_contours = False
+        terrain_contour_range = 5.0
+        terrain_contour_stride = 4
+        terrain_contour_max_lines = 360
+        terrain_contour_height_offset = 0.012
 
     class sim:
         dt = 0.005

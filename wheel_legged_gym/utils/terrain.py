@@ -62,7 +62,9 @@ class Terrain:
         self.tot_rows = int(cfg.num_rows * self.length_per_env_pixels) + 2 * self.border
 
         self.height_field_raw = np.zeros((self.tot_rows, self.tot_cols), dtype=np.int16)
-        if cfg.curriculum:
+        if getattr(cfg, "undulating_terrain", False):
+            self.undulating_terrain_fill()
+        elif cfg.curriculum:
             self.curiculum()
         elif cfg.selected:
             self.selected_terrain()
@@ -79,6 +81,45 @@ class Terrain:
                     self.cfg.slope_treshold,
                 )
             )
+
+    def undulating_terrain_fill(self):
+        """Fill the heightfield with smooth sinusoidal bumps per sub-terrain cell."""
+        cfg = self.cfg
+        amp = getattr(cfg, "undulating_amplitude", 0.06)
+        wl_x = getattr(cfg, "undulating_wavelength_x", 4.0)
+        wl_y = getattr(cfg, "undulating_wavelength_y", 4.0)
+        cross = getattr(cfg, "undulating_cross_weight", 0.45)
+        rand_cell = getattr(cfg, "undulating_randomize_cell", True)
+        wl_jit = getattr(cfg, "undulating_wavelength_jitter", 0.35)
+        for k in range(self.cfg.num_sub_terrains):
+            (i, j) = np.unravel_index(k, (self.cfg.num_rows, self.cfg.num_cols))
+            terrain = terrain_utils.SubTerrain(
+                "terrain",
+                width=self.width_per_env_pixels,
+                length=self.length_per_env_pixels,
+                vertical_scale=self.cfg.vertical_scale,
+                horizontal_scale=self.cfg.horizontal_scale,
+            )
+            if rand_cell:
+                phx = float(np.random.uniform(0.0, 2.0 * np.pi))
+                phy = float(np.random.uniform(0.0, 2.0 * np.pi))
+                jx = float(np.random.uniform(-wl_jit, wl_jit))
+                jy = float(np.random.uniform(-wl_jit, wl_jit))
+                wx = max(0.25, wl_x * (1.0 + jx))
+                wy = max(0.25, wl_y * (1.0 + jy))
+            else:
+                phx = phy = 0.0
+                wx, wy = wl_x, wl_y
+            undulating_wave_terrain(
+                terrain,
+                amplitude=amp,
+                wavelength_x=wx,
+                wavelength_y=wy,
+                phase_x=phx,
+                phase_y=phy,
+                cross_weight=cross,
+            )
+            self.add_terrain_to_map(terrain, i, j)
 
     def randomized_terrain(self):
         for k in range(self.cfg.num_sub_terrains):
@@ -212,6 +253,34 @@ class Terrain:
             np.max(terrain.height_field_raw[x1:x2, y1:y2]) * terrain.vertical_scale
         )
         self.env_origins[i, j] = [env_origin_x, env_origin_y, env_origin_z]
+
+
+def undulating_wave_terrain(
+    terrain,
+    amplitude,
+    wavelength_x,
+    wavelength_y,
+    phase_x=0.0,
+    phase_y=0.0,
+    cross_weight=0.45,
+):
+    """Smooth rolling bumps in meters; writes ``terrain.height_field_raw`` (vertical-scale units)."""
+    hs = terrain.horizontal_scale
+    vs = terrain.vertical_scale
+    ix = np.arange(terrain.length, dtype=np.float64)[:, None]
+    iy = np.arange(terrain.width, dtype=np.float64)[None, :]
+    x_m = ix * hs
+    y_m = iy * hs
+    kx = 2.0 * np.pi / max(float(wavelength_x), 0.25)
+    ky = 2.0 * np.pi / max(float(wavelength_y), 0.25)
+    cw = float(cross_weight)
+    norm = 1.0 + abs(cw)
+    z_m = float(amplitude) * (
+        np.sin(kx * x_m + phase_x) + cw * np.sin(ky * y_m + phase_y)
+    ) / norm
+    terrain.height_field_raw[:, :] = np.clip(
+        np.rint(z_m / vs).astype(np.int16), -32768, 32767
+    )
 
 
 def gap_terrain(terrain, gap_size, platform_size=1.0):

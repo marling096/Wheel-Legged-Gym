@@ -535,6 +535,11 @@ class LeggedRobotVMC(LeggedRobot):
         )
         return theta_error + l0_error
 
+    def _reward_vmc_leg_collapse(self):
+        min_leg_length = getattr(self.cfg.rewards, "min_vmc_leg_length", 0.12)
+        shortfall = torch.clamp(min_leg_length - self.L0, min=0.0)
+        return torch.sum(torch.square(shortfall), dim=1)
+
     def _reward_tracking_wheel_vel(self):
         wheel_radius = getattr(self.cfg.asset, "wheel_radius", 1.0)
         signed_wheel_vel = (
