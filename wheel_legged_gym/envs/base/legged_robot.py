@@ -1607,6 +1607,7 @@ class LeggedRobot(BaseTask):
         ref_env = min(getattr(self.cfg.viewer, "ref_env", 0), self.num_envs - 1)
         base_pos = self.root_states[ref_env, :3].detach().cpu().numpy()
         horizontal_scale = float(self.cfg.terrain.horizontal_scale)
+        vertical_scale = float(self.cfg.terrain.vertical_scale)
         border_size = float(self.cfg.terrain.border_size)
         radius = float(getattr(self.cfg.viewer, "terrain_contour_range", 5.0))
         stride = max(1, int(getattr(self.cfg.viewer, "terrain_contour_stride", 4)))
@@ -1636,7 +1637,7 @@ class LeggedRobot(BaseTask):
             return [
                 ix * horizontal_scale - border_size,
                 iy * horizontal_scale - border_size,
-                float(self.height_samples[ix, iy].item()) + z_offset,
+                float(self.height_samples[ix, iy].item()) * vertical_scale + z_offset,
             ]
 
         def color(z):
@@ -1659,7 +1660,8 @@ class LeggedRobot(BaseTask):
                 pa = point(ix, col_a)
                 pb = point(ix, col_b)
                 vertices.extend([pa, pb])
-                colors.append(color((pa[2] + pb[2]) * 0.5 - z_offset))
+                line_height = ((pa[2] + pb[2]) * 0.5 - z_offset) / vertical_scale
+                colors.append(color(line_height))
             if len(colors) >= max_lines:
                 break
         for iy in cols:
@@ -1669,7 +1671,8 @@ class LeggedRobot(BaseTask):
                 pa = point(row_a, iy)
                 pb = point(row_b, iy)
                 vertices.extend([pa, pb])
-                colors.append(color((pa[2] + pb[2]) * 0.5 - z_offset))
+                line_height = ((pa[2] + pb[2]) * 0.5 - z_offset) / vertical_scale
+                colors.append(color(line_height))
             if len(colors) >= max_lines:
                 break
         if not colors:

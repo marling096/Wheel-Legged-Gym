@@ -48,6 +48,10 @@ from .swpu2026_vmc_flat.swpu2026_vmc_flat_config import (
     Swpu2026VMCFlatCfg,
     Swpu2026VMCFlatCfgPPO,
 )
+from .swpu2026_vmc_undulating.swpu2026_vmc_undulating_config import (
+    Swpu2026VMCUndulatingCfg,
+    Swpu2026VMCUndulatingCfgPPO,
+)
 
 
 import os
@@ -77,4 +81,10 @@ task_registry.register(
     LeggedRobotVMC,
     Swpu2026VMCFlatCfg(),
     Swpu2026VMCFlatCfgPPO(),
+)
+task_registry.register(
+    "swpu2026_vmc_undulating",
+    LeggedRobotVMC,
+    Swpu2026VMCUndulatingCfg(),
+    Swpu2026VMCUndulatingCfgPPO(),
 )

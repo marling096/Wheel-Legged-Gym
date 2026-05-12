@@ -83,14 +83,22 @@ class Terrain:
             )
 
     def undulating_terrain_fill(self):
-        """Fill the heightfield with smooth sinusoidal bumps per sub-terrain cell."""
+        """Fill the heightfield with the configured undulating profile per cell."""
         cfg = self.cfg
+        profile = getattr(cfg, "undulating_profile", "wave")
         amp = getattr(cfg, "undulating_amplitude", 0.06)
-        wl_x = getattr(cfg, "undulating_wavelength_x", 4.0)
+        wl_x = getattr(
+            cfg,
+            "undulating_bump_spacing",
+            getattr(cfg, "undulating_wavelength_x", 4.0),
+        )
         wl_y = getattr(cfg, "undulating_wavelength_y", 4.0)
+        bump_width = getattr(cfg, "undulating_bump_width", 0.8)
+        lateral_amp = getattr(cfg, "undulating_lateral_amplitude", 0.0)
         cross = getattr(cfg, "undulating_cross_weight", 0.45)
         rand_cell = getattr(cfg, "undulating_randomize_cell", True)
         wl_jit = getattr(cfg, "undulating_wavelength_jitter", 0.35)
+        amp_jit = getattr(cfg, "undulating_amplitude_jitter", 0.0)
         for k in range(self.cfg.num_sub_terrains):
             (i, j) = np.unravel_index(k, (self.cfg.num_rows, self.cfg.num_cols))
             terrain = terrain_utils.SubTerrain(
@@ -105,20 +113,35 @@ class Terrain:
                 phy = float(np.random.uniform(0.0, 2.0 * np.pi))
                 jx = float(np.random.uniform(-wl_jit, wl_jit))
                 jy = float(np.random.uniform(-wl_jit, wl_jit))
+                ja = float(np.random.uniform(-amp_jit, amp_jit))
                 wx = max(0.25, wl_x * (1.0 + jx))
                 wy = max(0.25, wl_y * (1.0 + jy))
+                amp_cell = max(0.0, amp * (1.0 + ja))
             else:
                 phx = phy = 0.0
                 wx, wy = wl_x, wl_y
-            undulating_wave_terrain(
-                terrain,
-                amplitude=amp,
-                wavelength_x=wx,
-                wavelength_y=wy,
-                phase_x=phx,
-                phase_y=phy,
-                cross_weight=cross,
-            )
+                amp_cell = amp
+            if profile == "speed_bumps":
+                speed_bump_terrain(
+                    terrain,
+                    amplitude=amp_cell,
+                    spacing=wx,
+                    bump_width=bump_width,
+                    phase_x=phx,
+                    lateral_amplitude=lateral_amp,
+                    lateral_wavelength=wy,
+                    phase_y=phy,
+                )
+            else:
+                undulating_wave_terrain(
+                    terrain,
+                    amplitude=amp_cell,
+                    wavelength_x=wx,
+                    wavelength_y=wy,
+                    phase_x=phx,
+                    phase_y=phy,
+                    cross_weight=cross,
+                )
             self.add_terrain_to_map(terrain, i, j)
 
     def randomized_terrain(self):
@@ -278,6 +301,42 @@ def undulating_wave_terrain(
     z_m = float(amplitude) * (
         np.sin(kx * x_m + phase_x) + cw * np.sin(ky * y_m + phase_y)
     ) / norm
+    terrain.height_field_raw[:, :] = np.clip(
+        np.rint(z_m / vs).astype(np.int16), -32768, 32767
+    )
+
+
+def speed_bump_terrain(
+    terrain,
+    amplitude,
+    spacing,
+    bump_width,
+    phase_x=0.0,
+    lateral_amplitude=0.0,
+    lateral_wavelength=4.0,
+    phase_y=0.0,
+):
+    """Repeated rounded speed bumps in meters; ridges run across the y axis."""
+    hs = terrain.horizontal_scale
+    vs = terrain.vertical_scale
+    ix = np.arange(terrain.length, dtype=np.float64)[:, None]
+    iy = np.arange(terrain.width, dtype=np.float64)[None, :]
+    x_m = ix * hs
+    y_m = iy * hs
+    spacing = max(float(spacing), 0.25)
+    half_width = max(float(bump_width) * 0.5, hs)
+    phase_offset = (float(phase_x) / (2.0 * np.pi)) * spacing
+    nearest_center = np.rint((x_m - phase_offset) / spacing) * spacing + phase_offset
+    dist = np.abs(x_m - nearest_center)
+    bump = np.where(
+        dist <= half_width,
+        0.5 * (1.0 + np.cos(np.pi * dist / half_width)),
+        0.0,
+    )
+    z_m = float(amplitude) * bump
+    if lateral_amplitude != 0.0:
+        ky = 2.0 * np.pi / max(float(lateral_wavelength), 0.25)
+        z_m = z_m + float(lateral_amplitude) * np.sin(ky * y_m + phase_y)
     terrain.height_field_raw[:, :] = np.clip(
         np.rint(z_m / vs).astype(np.int16), -32768, 32767
     )
