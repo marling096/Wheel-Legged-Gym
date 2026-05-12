@@ -63,7 +63,7 @@ def install_keyboard_teleop(env, env_cfg):
     # 单次按下直接给定指令幅值（不再逐级换挡）
     vx_forward = float(np.clip(vx_max, vx_min, vx_max))
     vx_reverse = float(np.clip(vx_min, vx_min, vx_max))
-    dheading = 0.5  # rad / 次，目标航向单次跳动（仍属姿态指令而非速度档位）
+    dheading = 1.0  # rad / 次，目标航向单次跳动（仍属姿态指令而非速度档位）
 
     forward = quat_apply(env.base_quat[0:1], env.forward_vec[0:1])
     state = {
@@ -151,7 +151,7 @@ def install_keyboard_teleop(env, env_cfg):
         "键盘遥操作 (需聚焦仿真窗口):\n"
         f"  W/S 或 ↑/↓ : 线速度指令一次到位 "
         f"(前进={vx_forward:.2f} m/s, 后退={vx_reverse:.2f} m/s，取自 cfg.commands.ranges.lin_vel_x)\n"
-        "  A/D 或 ←/→ : 目标航向单次转动一步（heading_command=True 时生效）\n"
+        f"  A/D 或 ←/→ : 目标航向单次转动 {dheading:.1f} rad（heading_command=True 时生效）\n"
         "  Q/E        : 高度指令为高限 / 低限（cfg.commands.ranges.height）\n"
         "  Space      : 线速度归零\n"
         "  V          : 切换 viewer 同步（原有） Esc : 退出\n"

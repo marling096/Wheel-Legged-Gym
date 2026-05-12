@@ -71,8 +71,14 @@ class Swpu2026VMCFlatCfg(WheelLeggedVMCFlatCfg):
         }
 
     class commands(WheelLeggedVMCFlatCfg.commands):
+        resampling_time = 2.0
+        heading_command = True
+        heading_control_gain = 2.5
+
         class ranges(WheelLeggedVMCFlatCfg.commands.ranges):
-            height = [0.27, 0.34]
+            lin_vel_x = [-1.2, 1.2]
+            ang_vel_yaw = [-4.0, 4.0]
+            height = [0.25, 0.37]
 
     class domain_rand(WheelLeggedVMCFlatCfg.domain_rand):
         randomize_friction = False
@@ -93,10 +99,10 @@ class Swpu2026VMCFlatCfg(WheelLeggedVMCFlatCfg):
         command_wheel_vel_gain = 0.0
         l0_offset = 0.22
         feedforward_force = 45.0
-        kp_theta = 45.0
-        kd_theta = 2.5
-        kp_l0 = 900.0
-        kd_l0 = 20.0
+        kp_theta = 50.0
+        kd_theta = 3.0
+        kp_l0 = 1050.0
+        kd_l0 = 24.0
         damping = {"f0": 0.0, "f1": 0.0, "wheel": 2.0}
 
     class rewards(WheelLeggedVMCFlatCfg.rewards):
@@ -105,14 +111,14 @@ class Swpu2026VMCFlatCfg(WheelLeggedVMCFlatCfg):
 
         class scales(WheelLeggedVMCFlatCfg.rewards.scales):
             base_height = 3.0
-            tracking_lin_vel = 2.0
-            tracking_lin_vel_enhance = 2.0
-            tracking_ang_vel = 0.5
+            tracking_lin_vel = 2.5
+            tracking_lin_vel_enhance = 2.5
+            tracking_ang_vel = 1.5
             orientation = -20.0
             ang_vel_xy = -0.15
             torques = -5.0e-5
-            action_rate = -0.02
-            action_smooth = -0.02
+            action_rate = -0.01
+            action_smooth = -0.01
 
 
 class Swpu2026VMCFlatCfgPPO(WheelLeggedVMCFlatCfgPPO):
