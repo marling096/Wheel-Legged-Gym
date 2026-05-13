@@ -60,6 +60,11 @@ from .swpu2026_vmc_gravel.swpu2026_vmc_gravel_config import (
     Swpu2026VMCGravelCfg,
     Swpu2026VMCGravelCfgPPO,
 )
+from .swpu2026_terrain_preview.swpu2026_terrain_preview import TerrainPreviewTask
+from .swpu2026_terrain_preview.swpu2026_terrain_preview_config import (
+    Swpu2026TerrainPreviewCfg,
+    Swpu2026TerrainPreviewCfgPPO,
+)
 
 
 import os
@@ -107,4 +112,10 @@ task_registry.register(
     LeggedRobotVMC,
     Swpu2026VMCGravelCfg(),
     Swpu2026VMCGravelCfgPPO(),
+)
+task_registry.register(
+    "swpu2026_terrain_preview",
+    TerrainPreviewTask,
+    Swpu2026TerrainPreviewCfg(),
+    Swpu2026TerrainPreviewCfgPPO(),
 )

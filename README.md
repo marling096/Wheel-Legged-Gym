@@ -93,6 +93,14 @@ python wheel_legged_gym/scripts/play.py --task=wheel_legged_vmc_flat --lqr_demo
 
 Prefer **no `--headless`** so the viewer shows a single robot. This sets **`control_path`** to **`vmc_lqr`** internally.
 
+#### 6. Terrain preview (viewer only, no robot)
+
+Shows the terrains used by **`swpu2026_vmc_undulating`** and **`swpu2026_vmc_gravel`** side by side in the Isaac Gym viewer.
+
+```bash
+python wheel_legged_gym/scripts/show_terrain_preview.py --task=swpu2026_terrain_preview
+```
+
 #### Common CLI overrides (also apply to train / play where relevant)
 
 | Argument | Description |
@@ -106,11 +114,12 @@ Prefer **no `--headless`** so the viewer shows a single robot. This sets **`cont
 | `--exptid` | Suffix appended to run log folder name. |
 | `--headless` | Disable viewer. |
 
-#### 6. Existing tasks
+#### 7. Existing tasks
 
 - **wheel_legged**: End-to-end training for open-chain robot on varied terrain.
 - **wheel_legged_vmc**: VMC unifies open-chain / closed-chain-style deployment.
 - **wheel_legged_vmc_flat**: Flat terrain (lower VRAM).
+- **swpu2026_terrain_preview**: Viewer-only terrain preview for SWPU2026 undulating and gravel terrains, without robot actors.
 
 ### Adding a new environment ###
 The base environment `legged_robot` implements a rough terrain locomotion task. The corresponding cfg does not specify a robot asset (URDF/ MJCF) and has no reward scales. 
@@ -150,6 +159,5 @@ The base environment `legged_robot` implements a rough terrain locomotion task. 
     self.gym.refresh_force_sensor_tensor(self.sim)
     contact = self.sensor_forces[:, :, 2] > 1.
 ```
-
 
 

@@ -28,9 +28,11 @@
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
-import numpy as np
+import os
 from collections import defaultdict
-from multiprocessing import Process, Value
+from multiprocessing import Process
+
+import numpy as np
 
 
 class Logger:
@@ -58,116 +60,88 @@ class Logger:
         self.state_log.clear()
         self.rew_log.clear()
 
-    def plot_states(self):
-        self.plot_process = Process(target=self._plot)
+    def plot_states(self, save_path=None, title=None, show=True, blocking=False):
+        if not self.state_log:
+            return
+        if blocking:
+            self._plot(save_path=save_path, title=title, show=show)
+            return
+        self.plot_process = Process(
+            target=self._plot,
+            kwargs={"save_path": save_path, "title": title, "show": show},
+        )
         self.plot_process.start()
 
-    def _plot(self):
+    def _plot(self, save_path=None, title=None, show=True):
+        os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
         import matplotlib.pyplot as plt
 
-        nb_rows = 3
-        nb_cols = 3
-        fig, axs = plt.subplots(nb_rows, nb_cols)
-        for key, value in self.state_log.items():
-            time = np.linspace(0, len(value) * self.dt, len(value))
-            break
         log = self.state_log
-        # plot joint targets and real positions
-        a = axs[1, 0]
-        if log["dof_pos_obs"]:
-            a.plot(time, log["dof_pos_obs"], label="obs")
-        if log["dof_pos_est"]:
-            a.plot(time, log["dof_pos_est"], label="est")
-        if log["dof_pos"]:
-            a.plot(time, log["dof_pos"], label="real")
-        if log["dof_pos_target"]:
-            a.plot(time, log["dof_pos_target"], label="target")
-        a.set(xlabel="time [s]", ylabel="Position [rad]", title="DOF Position")
-        a.legend()
-        # plot joint velocity
-        a = axs[1, 1]
-        if log["dof_vel_obs"]:
-            a.plot(time, log["dof_vel_obs"], label="obs")
-        if log["dof_vel_est"]:
-            a.plot(time, log["dof_vel_est"], label="est")
-        if log["dof_vel"]:
-            a.plot(time, log["dof_vel"], label="real")
-        if log["dof_vel_target"]:
-            a.plot(time, log["dof_vel_target"], label="target")
-        a.set(xlabel="time [s]", ylabel="Velocity [rad/s]", title="Joint Velocity")
-        a.legend()
-        # plot base vel x
-        a = axs[0, 0]
-        if log["base_vel_x"]:
-            a.plot(time, log["base_vel_x"], label="real")
-        if log["est_lin_vel_x"]:
-            a.plot(time, log["est_lin_vel_x"], label="est")
-        if log["command_x"]:
-            a.plot(time, log["command_x"], label="commanded")
-        a.set(xlabel="time [s]", ylabel="base lin vel [m/s]", title="Base velocity x")
-        a.legend()
-        # plot base vel y
-        a = axs[0, 1]
-        if log["base_vel_y"]:
-            a.plot(time, log["base_vel_y"], label="real")
-        if log["est_lin_vel_y"]:
-            a.plot(time, log["est_lin_vel_y"], label="est")
-        if log["command_y"]:
-            a.plot(time, log["command_y"], label="commanded")
-        a.set(xlabel="time [s]", ylabel="base lin vel [m/s]", title="Base velocity y")
-        a.legend()
-        # plot base vel yaw
-        a = axs[0, 2]
-        if log["base_vel_yaw_obs"]:
-            a.plot(time, log["base_vel_yaw_obs"], label="obs")
-        if log["base_vel_yaw_est"]:
-            a.plot(time, log["base_vel_yaw_est"], label="est")
-        if log["base_vel_yaw"]:
-            a.plot(time, log["base_vel_yaw"], label="real")
-        if log["command_yaw"]:
-            a.plot(time, log["command_yaw"], label="commanded")
-        a.set(
-            xlabel="time [s]", ylabel="base ang vel [rad/s]", title="Base velocity yaw"
+        if log.get("time"):
+            time = np.asarray(log["time"], dtype=np.float64)
+        else:
+            time = None
+            for value in log.values():
+                if value:
+                    time = np.linspace(0.0, (len(value) - 1) * self.dt, len(value))
+                    break
+            if time is None:
+                return
+
+        fig, axs = plt.subplots(2, 2, figsize=(14, 8), constrained_layout=True)
+        fig.set_constrained_layout_pads(
+            w_pad=0.04,
+            h_pad=0.04,
+            wspace=0.08,
+            hspace=0.10,
         )
-        a.legend()
-        # plot base vel z
-        a = axs[1, 2]
-        if log["base_vel_z"]:
-            a.plot(time, log["base_vel_z"], label="real")
-        if log["est_lin_vel_z"]:
-            a.plot(time, log["est_lin_vel_z"], label="est")
-        a.set(xlabel="time [s]", ylabel="base lin vel [m/s]", title="Base velocity z")
-        a.legend()
-        # plot contact forces
-        a = axs[2, 0]
-        # if log["contact_forces_z"]:
-        #     forces = np.array(log["contact_forces_z"])
-        #     for i in range(forces.shape[1]):
-        #         a.plot(time, forces[:, i], label=f"force {i}")
-        # a.set(xlabel="time [s]", ylabel="Forces z [N]", title="Vertical Contact forces")
-        if log["base_height"]:
-            a.plot(time, log["base_height"], label="real")
-        if log["command_height"]:
-            a.plot(time, log["command_height"], label="commanded")
-        a.set(xlabel="time [s]", ylabel="base height [m]", title="Base Height")
-        a.legend()
-        # plot torque/vel curves
-        a = axs[2, 1]
-        if log["dof_vel"] != [] and log["dof_torque"] != []:
-            a.plot(log["dof_vel"], log["dof_torque"], "x", label="real")
-        a.set(
-            xlabel="Joint vel [rad/s]",
-            ylabel="Joint Torque [Nm]",
-            title="Torque/velocity curves",
+        if title:
+            fig.suptitle(title, fontsize=12)
+
+        def _plot_tracking(ax, actual_key, command_key, ylabel, plot_title):
+            if log.get(actual_key):
+                ax.plot(time, log[actual_key], label="actual", linewidth=1.5)
+            if log.get(command_key):
+                ax.plot(time, log[command_key], label="command", linewidth=1.2)
+            ax.set(xlabel="time [s]", ylabel=ylabel, title=plot_title)
+            ax.grid(True, alpha=0.3)
+            if ax.lines:
+                ax.legend(fontsize=8)
+
+        def _plot_attitude(ax, key, plot_title):
+            if log.get(key):
+                ax.plot(time, log[key], label=key, linewidth=1.5)
+            ax.axhline(0.0, color="k", linestyle="--", linewidth=0.8, alpha=0.5)
+            ax.set(xlabel="time [s]", ylabel="angle [rad]", title=plot_title)
+            ax.grid(True, alpha=0.3)
+            if len(ax.lines) > 1:
+                ax.legend(fontsize=8)
+
+        _plot_tracking(
+            axs[0, 0],
+            "base_vel_x",
+            "command_x",
+            "forward velocity [m/s]",
+            "Forward Velocity Tracking",
         )
-        a.legend()
-        # plot torques
-        a = axs[2, 2]
-        if log["dof_torque"] != []:
-            a.plot(time, log["dof_torque"], label="real")
-        a.set(xlabel="time [s]", ylabel="Joint Torque [Nm]", title="Torque")
-        a.legend()
-        plt.show()
+        _plot_tracking(
+            axs[0, 1],
+            "base_height",
+            "command_height",
+            "base height [m]",
+            "Base Height Tracking",
+        )
+        _plot_attitude(axs[1, 0], "pitch", "Pitch Angle")
+        _plot_attitude(axs[1, 1], "roll", "Roll Angle")
+
+        if save_path:
+            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+            fig.savefig(save_path, dpi=200)
+            print(f"[play_plot] saved performance plot: {save_path}")
+
+        if show:
+            plt.show()
+        plt.close(fig)
 
     def print_rewards(self):
         print("Average rewards per second:")
@@ -177,5 +151,5 @@ class Logger:
         print(f"Total number of episodes: {self.num_episodes}")
 
     def __del__(self):
-        if self.plot_process is not None:
+        if self.plot_process is not None and self.plot_process.is_alive():
             self.plot_process.kill()

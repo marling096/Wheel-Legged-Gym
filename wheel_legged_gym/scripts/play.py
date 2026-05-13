@@ -434,6 +434,14 @@ class RuntimeStateLogger:
         )
 
 
+def _default_play_plot_path(train_cfg, task_name):
+    default_dir = os.path.join(
+        WHEEL_LEGGED_GYM_ROOT_DIR, "logs", train_cfg.runner.experiment_name
+    )
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return os.path.join(default_dir, f"play_performance_{task_name}_{timestamp}.png")
+
+
 def play(args):
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     lqr_demo = getattr(args, "lqr_demo", False)
@@ -538,8 +546,7 @@ def play(args):
     logger = Logger(env.dt)
     robot_index = 0  # which robot is used for logging (reduced from 21 due to smaller num_envs for inference)
     runtime_logger = RuntimeStateLogger(env, env_cfg, train_cfg, args, robot_index)
-    joint_index = 1  # which joint is used for logging
-    stop_state_log = 1000  # number of steps before plotting states
+    plot_path = _default_play_plot_path(train_cfg, args.task)
     stop_rew_log = (
         env.max_episode_length + 1
     )  # number of steps before print average episode rewards
@@ -619,81 +626,22 @@ def play(args):
                 camera_position = target_position + camera_offset
                 env.set_camera(camera_position, target_position)
 
-            if i < stop_state_log:
-                logger.log_states(
-                    {
-                        "dof_pos_target": actions[robot_index, joint_index].item()
-                        * env.cfg.control.action_scale
-                        + env.default_dof_pos[robot_index, joint_index].item(),
-                        "dof_pos": env.dof_pos[robot_index, joint_index].item(),
-                        "dof_vel": env.dof_vel[robot_index, joint_index].item(),
-                        "dof_torque": env.torques[robot_index, joint_index].item(),
-                        "command_yaw": env.commands[robot_index, 1].item(),
-                        "command_height": env.commands[robot_index, 2].item(),
-                        "base_height": env.base_height[robot_index].item(),
-                        "base_vel_x": get_forward_lin_vel(env)[robot_index].item(),
-                        "base_vel_y": env.base_lin_vel[robot_index, 1].item(),
-                        "base_vel_z": env.base_lin_vel[robot_index, 2].item(),
-                        "base_vel_yaw": env.base_ang_vel[robot_index, 2].item(),
-                        "contact_forces_z": env.contact_forces[
-                            robot_index, env.feet_indices, 2
-                        ]
-                        .cpu()
-                        .numpy(),
-                    }
-                )
-                if CoM_offset_compensate:
-                    logger.log_states({"command_x": vel_cmd[robot_index].item()})
-                else:
-                    logger.log_states(
-                        {"command_x": env.commands[robot_index, 0].item()}
-                    )
-                if latent is not None:
-                    logger.log_states(
-                        {
-                            "est_lin_vel_x": latent[robot_index, 0].item()
-                            / env.cfg.normalization.obs_scales.lin_vel,
-                            "est_lin_vel_y": latent[robot_index, 1].item()
-                            / env.cfg.normalization.obs_scales.lin_vel,
-                            "est_lin_vel_z": latent[robot_index, 2].item()
-                            / env.cfg.normalization.obs_scales.lin_vel,
-                        }
-                    )
-                    if latent.shape[1] > 3 and env_cfg.noise.add_noise:
-                        logger.log_states(
-                            {
-                                "base_vel_yaw_obs": obs[robot_index, 2].item()
-                                / env.cfg.normalization.obs_scales.ang_vel,
-                                "dof_pos_obs": obs[robot_index, 9 + joint_index].item()
-                                / env.cfg.normalization.obs_scales.dof_pos
-                                + env.default_dof_pos[
-                                    robot_index, joint_index
-                                ].item(),
-                                "dof_vel_obs": obs[robot_index, 15 + joint_index].item()
-                                / env.cfg.normalization.obs_scales.dof_vel,
-                            }
-                        )
-                        logger.log_states(
-                            {
-                                "base_vel_yaw_est": latent[
-                                    robot_index, 3 + 2
-                                ].item()
-                                / env.cfg.normalization.obs_scales.ang_vel,
-                                "dof_pos_est": latent[
-                                    robot_index, 3 + 9 + joint_index
-                                ].item()
-                                / env.cfg.normalization.obs_scales.dof_pos
-                                + env.default_dof_pos[
-                                    robot_index, joint_index
-                                ].item(),
-                                "dof_vel_est": latent[
-                                    robot_index, 3 + 15 + joint_index
-                                ].item()
-                                / env.cfg.normalization.obs_scales.dof_vel,
-                            }
-                        )
-            elif i == stop_state_log:
-                logger.plot_states()
+            roll, pitch, _ = get_euler_xyz(env.base_quat[robot_index : robot_index + 1])
+            logger.log_states(
+                {
+                    "time": i * env.dt,
+                    "command_x": (
+                        vel_cmd[robot_index].item()
+                        if CoM_offset_compensate
+                        else env.commands[robot_index, 0].item()
+                    ),
+                    "base_vel_x": get_forward_lin_vel(env)[robot_index].item(),
+                    "command_height": env.commands[robot_index, 2].item(),
+                    "base_height": env.base_height[robot_index].item(),
+                    "pitch": wrap_to_pi(pitch)[0].item(),
+                    "roll": wrap_to_pi(roll)[0].item(),
+                }
+            )
             if 0 < i < stop_rew_log:
                 episode_info = infos.get("episode")
                 if episode_info:
@@ -704,6 +652,12 @@ def play(args):
                 logger.print_rewards()
     finally:
         runtime_logger.close()
+        logger.plot_states(
+            save_path=plot_path,
+            title=f"{args.task} play performance",
+            show=not getattr(args, "headless", False),
+            blocking=True,
+        )
 
 
 if __name__ == "__main__":
