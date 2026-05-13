@@ -31,13 +31,16 @@
 import numpy as np
 from numpy.random import choice
 from scipy import interpolate
+from typing import TYPE_CHECKING
 
 from isaacgym import terrain_utils
-from wheel_legged_gym.envs.base.legged_robot_config import LeggedRobotCfg
+
+if TYPE_CHECKING:
+    from wheel_legged_gym.envs.base.legged_robot_config import LeggedRobotCfg
 
 
 class Terrain:
-    def __init__(self, cfg: LeggedRobotCfg.terrain, num_robots) -> None:
+    def __init__(self, cfg: "LeggedRobotCfg.terrain", num_robots) -> None:
 
         self.cfg = cfg
         self.num_robots = num_robots
