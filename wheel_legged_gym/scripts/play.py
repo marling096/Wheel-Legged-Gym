@@ -488,6 +488,20 @@ def play(args):
     if lqr_demo:
         env_cfg.commands.resampling_time = 1e9
 
+    # --- play-mode performance optimizations ---
+    # reduce viewer resolution for faster rendering (can be overridden via --play_viewer_scale)
+    _viewer_scale = float(getattr(args, "play_viewer_scale", 0.75) or 1.0)
+    if _viewer_scale != 1.0 and hasattr(env_cfg, "viewer"):
+        env_cfg.viewer.width = max(320, int(env_cfg.viewer.width * _viewer_scale))
+        env_cfg.viewer.height = max(200, int(env_cfg.viewer.height * _viewer_scale))
+
+    # reduce PhysX solver iterations for faster physics (play doesn't need training-grade accuracy)
+    if not getattr(args, "play_match_train", False):
+        if hasattr(env_cfg.sim, "physx"):
+            env_cfg.sim.physx.num_position_iterations = 2
+            env_cfg.sim.physx.num_velocity_iterations = 0
+            env_cfg.sim.physx.default_buffer_size_multiplier = 2.0
+
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     if getattr(env_cfg.terrain, "undulating_terrain", False) and getattr(

@@ -294,6 +294,12 @@ def get_args():
             "help": "play.py only: override number of envs for play (0=auto: min(cfg.num_envs,4) for plane, min(cfg.num_envs,2) for trimesh).",
         },
         {
+            "name": "--play_viewer_scale",
+            "type": float,
+            "default": 0.75,
+            "help": "play.py only: scale viewer resolution (default 0.75 = 960x540 from 1280x720). 1.0 = native resolution.",
+        },
+        {
             "name": "--run_name",
             "type": str,
             "help": "Run name suffix in log folder; omit or empty uses timestamp YYYYmmdd_HHMMSS_mmm.",
