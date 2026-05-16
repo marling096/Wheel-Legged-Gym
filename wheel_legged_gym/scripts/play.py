@@ -455,6 +455,11 @@ def play(args):
     env_cfg.env.episode_length_s = 20
     env_cfg.env.fail_to_terminal_time_s = 3
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 4)  # reduced for inference to save GPU memory
+    if getattr(args, "play_num_envs", 0) > 0:
+        env_cfg.env.num_envs = min(env_cfg.env.num_envs, args.play_num_envs)
+    # trimesh terrain is slower for PhysX collision; use fewer envs
+    if getattr(env_cfg.terrain, "mesh_type", "") == "trimesh":
+        env_cfg.env.num_envs = min(env_cfg.env.num_envs, 2)
     if lqr_demo:
         env_cfg.env.num_envs = 1
     # 勿覆盖起伏地任务的地形网格与 curriculum（与训练 cfg 一致）
@@ -550,6 +555,14 @@ def play(args):
     stop_rew_log = (
         env.max_episode_length + 1
     )  # number of steps before print average episode rewards
+    _show_plot = not getattr(args, "headless", False)
+    _plot_interval = int(getattr(args, "play_plot_interval", 20) or 1)
+    if _plot_interval <= 0:
+        _show_plot = False
+    if _show_plot:
+        logger.start_live_plot(
+            save_path=plot_path, title=f"{args.task} play performance"
+        )
     camera_position = np.array(env_cfg.viewer.pos, dtype=np.float64)
     camera_vel = np.array([1.0, 1.0, 0.0])
     camera_direction = np.array(env_cfg.viewer.lookat) - np.array(env_cfg.viewer.pos)
@@ -606,6 +619,8 @@ def play(args):
 
             obs, _, rews, dones, infos, obs_history = env.step(actions)
             runtime_logger.maybe_log(i, actions)
+            if _show_plot and i % _plot_interval == 0:
+                logger.update_live_plot()
             if RECORD_FRAMES:
                 if i % 2:
                     filename = os.path.join(
@@ -652,12 +667,15 @@ def play(args):
                 logger.print_rewards()
     finally:
         runtime_logger.close()
-        logger.plot_states(
-            save_path=plot_path,
-            title=f"{args.task} play performance",
-            show=not getattr(args, "headless", False),
-            blocking=True,
-        )
+        if _show_plot:
+            logger.close_live_plot(save_path=plot_path)
+        else:
+            logger.plot_states(
+                save_path=plot_path,
+                title=f"{args.task} play performance",
+                show=False,
+                blocking=True,
+            )
 
 
 if __name__ == "__main__":

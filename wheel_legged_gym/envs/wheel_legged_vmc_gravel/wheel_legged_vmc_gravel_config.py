@@ -20,8 +20,12 @@ class WheelLeggedVMCGravelCfg(WheelLeggedVMCUndulatingCfg):
         gravel_rut_depth = 0.012
         gravel_rut_width = 0.40
 
-
+        # 减小地形范围以提升渲染性能
+        terrain_length = 5.0
+        terrain_width = 5.0
+        border_size = 2.0
 class WheelLeggedVMCGravelCfgPPO(WheelLeggedVMCUndulatingCfgPPO):
     class runner(WheelLeggedVMCUndulatingCfgPPO.runner):
         experiment_name = "wheel_legged_vmc_gravel"
-        max_iterations = 500
+        max_iterations = 1000
+        num_envs = 1

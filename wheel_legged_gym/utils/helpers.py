@@ -282,6 +282,18 @@ def get_args():
             "help": "play.py only: warmup steps before enabling play_height_assist.",
         },
         {
+            "name": "--play_plot_interval",
+            "type": int,
+            "default": 20,
+            "help": "play.py only: update live plot every N steps (default 20). Set 1 for per-step updates, <=0 to disable.",
+        },
+        {
+            "name": "--play_num_envs",
+            "type": int,
+            "default": 0,
+            "help": "play.py only: override number of envs for play (0=auto: min(cfg.num_envs,4) for plane, min(cfg.num_envs,2) for trimesh).",
+        },
+        {
             "name": "--run_name",
             "type": str,
             "help": "Run name suffix in log folder; omit or empty uses timestamp YYYYmmdd_HHMMSS_mmm.",

@@ -39,7 +39,7 @@ class Swpu2026VMCUndulatingCfg(Swpu2026VMCFlatCfg):
         num_cols = 5
 
     class viewer(Swpu2026VMCFlatCfg.viewer):
-        draw_terrain_contours = True
+        draw_terrain_contours = False  # 每帧绘制大量等高线会严重拖慢仿真
         terrain_contour_range = 3.2
         terrain_contour_stride = 4
         terrain_contour_max_lines = 260

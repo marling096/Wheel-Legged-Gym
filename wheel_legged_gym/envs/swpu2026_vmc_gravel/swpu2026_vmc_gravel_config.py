@@ -20,8 +20,13 @@ class Swpu2026VMCGravelCfg(Swpu2026VMCUndulatingCfg):
         gravel_rut_depth = 0.010
         gravel_rut_width = 0.38
 
+        # 减小地形范围以提升渲染性能
+        terrain_length = 5.0
+        terrain_width = 5.0
+        border_size = 2.0
+
 
 class Swpu2026VMCGravelCfgPPO(Swpu2026VMCUndulatingCfgPPO):
     class runner(Swpu2026VMCUndulatingCfgPPO.runner):
         experiment_name = "swpu2026_vmc_gravel"
-        max_iterations = 500
+        max_iterations = 1000

@@ -53,9 +53,13 @@ class WheelLeggedVMCUndulatingCfg(WheelLeggedVMCFlatCfg):
         curriculum = False
         selected = False
         undulating_terrain = True
-        # 稍细网格让减速带轮廓在 play 窗口中更清楚，同时保持 5x5 地形规模可训练。
         horizontal_scale = 0.10
-        border_size = 8.0
+        # 3×3 格 × 3m + 2×1.8m 边框 = 12.6m 边长 = 158.8 m² ≈ 原 3136 m² 的 1/20
+        border_size = 1.8
+        terrain_length = 1.0
+        terrain_width = 1.0
+        num_rows = 1
+        num_cols = 2
         # 连续圆顶减速带：沿 x 方向反复出现，脊线横跨 y 方向。
         undulating_profile = "speed_bumps"
         undulating_amplitude = 0.13
@@ -68,14 +72,12 @@ class WheelLeggedVMCUndulatingCfg(WheelLeggedVMCFlatCfg):
         undulating_randomize_cell = True
         undulating_wavelength_jitter = 0.12
         undulating_amplitude_jitter = 0.12
-        num_rows = 5
-        num_cols = 5
 
     class viewer(WheelLeggedVMCFlatCfg.viewer):
-        draw_terrain_contours = True
-        terrain_contour_range = 6.0
-        terrain_contour_stride = 2
-        terrain_contour_max_lines = 1100
+        draw_terrain_contours = False  # 每帧绘制大量等高线会严重拖慢仿真
+        terrain_contour_range = 3.0
+        terrain_contour_stride = 3
+        terrain_contour_max_lines = 400
         terrain_contour_height_offset = 0.025
 
     class rewards(WheelLeggedVMCFlatCfg.rewards):
@@ -90,4 +92,4 @@ class WheelLeggedVMCUndulatingCfg(WheelLeggedVMCFlatCfg):
 class WheelLeggedVMCUndulatingCfgPPO(WheelLeggedVMCFlatCfgPPO):
     class runner(WheelLeggedVMCFlatCfgPPO.runner):
         experiment_name = "wheel_legged_vmc_undulating"
-        max_iterations = 500
+        max_iterations = 1000
