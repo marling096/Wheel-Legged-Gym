@@ -46,7 +46,7 @@ class Swpu2026TerrainPreviewCfg(LeggedRobotCfg):
         episode_length_s = 60.0
 
     class terrain(LeggedRobotCfg.terrain):
-        mesh_type = "trimesh"
+        mesh_type = "heightfield"
         measure_heights = False
         curriculum = False
         selected = False

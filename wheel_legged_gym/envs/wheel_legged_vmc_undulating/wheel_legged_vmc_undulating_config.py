@@ -48,7 +48,7 @@ class WheelLeggedVMCUndulatingCfg(WheelLeggedVMCFlatCfg):
         min_leg_length = 0.11
 
     class terrain(WheelLeggedVMCCfg.terrain):
-        mesh_type = "trimesh"
+        mesh_type = "heightfield"  # 比 trimesh 碰撞检测更快，兼容同样高度场函数
         measure_heights = True
         curriculum = False
         selected = False

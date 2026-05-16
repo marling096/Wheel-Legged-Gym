@@ -30,6 +30,7 @@
 
 from wheel_legged_gym import WHEEL_LEGGED_GYM_ROOT_DIR
 import os
+import sys
 import csv
 from datetime import datetime
 
@@ -457,8 +458,8 @@ def play(args):
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 4)  # reduced for inference to save GPU memory
     if getattr(args, "play_num_envs", 0) > 0:
         env_cfg.env.num_envs = min(env_cfg.env.num_envs, args.play_num_envs)
-    # trimesh terrain is slower for PhysX collision; use fewer envs
-    if getattr(env_cfg.terrain, "mesh_type", "") == "trimesh":
+    # trimesh/heightfield terrain is slower for PhysX collision; use fewer envs
+    if getattr(env_cfg.terrain, "mesh_type", "") in ("trimesh", "heightfield"):
         env_cfg.env.num_envs = min(env_cfg.env.num_envs, 2)
     if lqr_demo:
         env_cfg.env.num_envs = 1
@@ -469,8 +470,14 @@ def play(args):
         env_cfg.terrain.max_init_terrain_level = env_cfg.terrain.num_rows - 1
         env_cfg.terrain.curriculum = True
     else:
-        # 起伏地播放时保留训练地形波幅，只固定初始层便于观察。
+        # 起伏地播放时无需训练级大地形，缩到只覆盖所需环境数
         env_cfg.terrain.max_init_terrain_level = 0
+        _play_envs = env_cfg.env.num_envs
+        env_cfg.terrain.num_rows = 1
+        env_cfg.terrain.num_cols = max(1, min(_play_envs, 2))
+        # 缩小边框降低外围无效高度场格数
+        if getattr(env_cfg.terrain, "border_size", 0) > 3.0:
+            env_cfg.terrain.border_size = 2.0
     if not getattr(args, "play_match_train", False):
         env_cfg.noise.add_noise = False
         env_cfg.domain_rand.randomize_friction = False
@@ -502,6 +509,18 @@ def play(args):
             env_cfg.sim.physx.num_velocity_iterations = 0
             env_cfg.sim.physx.default_buffer_size_multiplier = 2.0
 
+    # gravel terrain: reduce stone count for faster heightfield sampling
+    _play_gravel_density = float(getattr(args, "play_gravel_density", 0.3) or 1.0)
+    if _play_gravel_density != 1.0 and getattr(env_cfg.terrain, "undulating_profile", "") == "gravel":
+        env_cfg.terrain.gravel_stone_density = _play_gravel_density
+
+    # coarser terrain grid = fewer heightfield cells = faster physics
+    _play_hs = float(getattr(args, "play_horizontal_scale", 0.0) or 0.0)
+    if _play_hs > 0:
+        _orig_hs = env_cfg.terrain.horizontal_scale
+        env_cfg.terrain.horizontal_scale = _play_hs
+        print(f"[play] terrain horizontal_scale={_play_hs} (训练值={_orig_hs})")
+
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     if getattr(env_cfg.terrain, "undulating_terrain", False) and getattr(
@@ -510,6 +529,28 @@ def play(args):
         env.debug_viz = True
     if getattr(args, "play_match_train", False):
         print("[play] play_match_train: 保留训练 cfg 中的噪声与 domain_rand（未套用 play 默认全关）。")
+    _play_no_sync = getattr(args, "play_no_sync", False)
+    _play_frame_skip = max(1, int(getattr(args, "play_frame_skip", 1) or 1))
+    if _play_no_sync or _play_frame_skip > 1:
+        _orig_render = env.render
+        _frame_counter = [0]
+        def _patched_render(sync_frame_time=True):
+            _frame_counter[0] += 1
+            if _frame_counter[0] % _play_frame_skip != 0:
+                if env.viewer:
+                    for evt in env.gym.query_viewer_action_events(env.viewer):
+                        if evt.action == "QUIT" and evt.value > 0:
+                            sys.exit()
+                        elif evt.action == "toggle_viewer_sync" and evt.value > 0:
+                            env.enable_viewer_sync = not env.enable_viewer_sync
+                    env.gym.poll_viewer_events(env.viewer)
+                return
+            return _orig_render(sync_frame_time=False if _play_no_sync else sync_frame_time)
+        env.render = _patched_render.__get__(env, type(env))
+        if _play_no_sync:
+            print("[play] --play_no_sync: 跳过 sync_frame_time，模拟可快于实时。")
+        if _play_frame_skip > 1:
+            print(f"[play] --play_frame_skip {_play_frame_skip}: 每 {_play_frame_skip} 步渲染一帧。")
     _pha = float(getattr(args, "play_height_assist", 0.0) or 0.0)
     _pha_warmup = int(getattr(args, "play_height_assist_warmup", 300) or 0)
     _pha_warmup = max(0, _pha_warmup)

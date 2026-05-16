@@ -11,7 +11,7 @@ class Swpu2026VMCUndulatingCfg(Swpu2026VMCFlatCfg):
         num_envs = 1024
 
     class terrain(Swpu2026VMCFlatCfg.terrain):
-        mesh_type = "trimesh"
+        mesh_type = "heightfield"  # 比 trimesh 碰撞检测更快，兼容同样高度场函数
         measure_heights = True
         curriculum = False
         selected = False

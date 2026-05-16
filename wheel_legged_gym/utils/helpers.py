@@ -300,6 +300,30 @@ def get_args():
             "help": "play.py only: scale viewer resolution (default 0.75 = 960x540 from 1280x720). 1.0 = native resolution.",
         },
         {
+            "name": "--play_no_sync",
+            "action": "store_true",
+            "default": False,
+            "help": "play.py only: skip gym.sync_frame_time so simulation can run faster than real-time.",
+        },
+        {
+            "name": "--play_frame_skip",
+            "type": int,
+            "default": 1,
+            "help": "play.py only: render every N simulation steps (default 1=every step). 2=half rendering, physics runs full speed.",
+        },
+        {
+            "name": "--play_gravel_density",
+            "type": float,
+            "default": 0.3,
+            "help": "play.py only: gravel stone density multiplier for faster heightfield sampling (default 0.3, training=1.0).",
+        },
+        {
+            "name": "--play_horizontal_scale",
+            "type": float,
+            "default": 0.0,
+            "help": "play.py only: override terrain horizontal_scale (m/cell). 0=use training value. Larger=coarser grid=fewer cells=faster. Try 0.20 for undulating, 0.15 for gravel.",
+        },
+        {
             "name": "--run_name",
             "type": str,
             "help": "Run name suffix in log folder; omit or empty uses timestamp YYYYmmdd_HHMMSS_mmm.",
