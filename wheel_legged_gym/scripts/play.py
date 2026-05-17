@@ -654,14 +654,14 @@ def play(args):
                 USE_KEYBOARD_TELEOP
                 and getattr(env, "_keyboard_teleop_state", None) is not None
             ):
-                env.commands[:, 0] = 2.5
+                env.commands[:, 0] = 1.0
                 env.commands[:, 2] = height_cmd  # + 0.07 * np.sin(i * 0.01)
                 env.commands[:, 3] = 0
 
             if CoM_offset_compensate:
                 forward_lin_vel = get_forward_lin_vel(env)
                 if i > 200 and i < 600:
-                    vel_cmd[:] = 2.5 * np.clip((i - 200) * 0.05, 0, 1)
+                    vel_cmd[:] = 1.0 * np.clip((i - 200) * 0.05, 0, 1)
                 else:
                     vel_cmd[:] = 0
                 vel_err_intergral += (
